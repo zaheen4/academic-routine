@@ -49,8 +49,28 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
         }
     }
 
+    // Spawn lightweight HTTP health check server for cloud platforms (e.g. Render)
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
+    tokio::spawn(async move {
+        let addr = format!("0.0.0.0:{port}");
+        if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
+            println!("🌐 Cloud health check server listening on {addr}");
+            loop {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let mut buf = [0u8; 512];
+                        let _ = stream.read(&mut buf).await;
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 16\r\nConnection: close\r\n\r\nBot is healthy!\n";
+                        let _ = stream.write_all(resp).await;
+                    });
+                }
+            }
+        }
+    });
+
     println!("🤖 Academic Routine Telegram Bot is online and listening for messages!");
-    println!("   Commands supported: /today, /next, /tomorrow, /free, /drop, /restore, /calendar");
+    println!("   Commands supported: /today, /next, /tomorrow, /free, /drop, /restore, /calendar, /sync");
 
     let handler_ctx = Arc::clone(&shared_ctx);
     Command::repl(bot, move |b: Bot, msg: Message, cmd: Command| {

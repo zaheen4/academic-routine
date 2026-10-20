@@ -1,6 +1,12 @@
 # Multi-stage Docker build for standalone container deployment
 FROM rust:1-slim AS builder
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /usr/src/app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
@@ -29,6 +35,10 @@ RUN python3 -m venv /app/.venv \
     && /app/.venv/bin/pip install --no-cache-dir -r /app/scraper/requirements.txt
 
 COPY --from=builder /usr/src/app/target/release/academic-routine /usr/local/bin/academic-routine
+
+# Default HTTP health check port for cloud platforms (Render)
+ENV PORT=8000
+EXPOSE 8000
 
 # Default command launches Telegram bot daemon
 CMD ["academic-routine", "bot"]
