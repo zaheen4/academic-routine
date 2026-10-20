@@ -95,5 +95,9 @@ pub enum Commands {
         /// Force re-scrape even if routine data is fresh
         #[arg(long)]
         force: bool,
+
+        /// Run browser visibly for debugging (default: false / headless offscreen virtual display)
+        #[arg(long)]
+        headed: bool,
     },
 }

@@ -18,7 +18,8 @@ pub mod model;
 pub use bot::{run_bot_daemon, BotContext, Command};
 pub use cli::{Cli, Commands};
 pub use engine::{
-    load_routine_file, parse_routine_json, run_ucam_scraper, IngestError, ScraperError,
+    load_routine_file, parse_routine_json, run_ucam_scraper, run_ucam_scraper_opts, IngestError,
+    ScraperError,
 };
 pub use exporters::{
     export_ics_file, generate_ics, render_day_table, render_today_card, render_weekly_overview,

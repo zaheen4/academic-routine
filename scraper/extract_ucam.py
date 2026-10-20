@@ -204,17 +204,32 @@ def parse_report_html(html: str, default_section: str = "B") -> list[dict]:
     return entries
 
 
-async def extract_account_routine(account: dict, chrome_bin: str) -> tuple[str, list[dict]]:
+async def extract_account_routine(
+    account: dict, chrome_bin: str, headed: bool = False
+) -> tuple[str, list[dict]]:
     """Logs into UCAM, bypasses Cloudflare, and extracts routine report for an account."""
     uname = account["username"]
     pwd = account["password"]
     acc_id = account.get("id", uname)
     sec_label = account.get("section_label", "B")
 
-    logger.info("Starting browser session for %s (%s)...", acc_id, uname)
+    browser_args = [
+        "--ozone-platform=x11",
+        "--window-size=1920,1080",
+    ]
+    if not headed:
+        browser_args.append("--no-sandbox")
+
+    logger.info(
+        "Starting browser session for %s (%s) [headed=%s]...",
+        acc_id,
+        uname,
+        headed,
+    )
     browser = await nd.start(
         headless=False,
         browser_executable_path=chrome_bin,
+        browser_args=browser_args,
     )
     tab = browser.main_tab if hasattr(browser, "main_tab") else browser
 
@@ -294,8 +309,11 @@ async def extract_account_routine(account: dict, chrome_bin: str) -> tuple[str, 
         browser.stop()
 
 
-async def run_multi_account_extraction(output_path: Path):
+async def run_multi_account_extraction(output_path: Path, headed: bool = False):
     """Executes routine extraction across all configured accounts and emits JSON."""
+    if not headed and "WAYLAND_DISPLAY" in os.environ:
+        os.environ.pop("WAYLAND_DISPLAY", None)
+
     chrome_bin = find_chrome_executable()
     accounts = load_accounts()
 
@@ -305,7 +323,7 @@ async def run_multi_account_extraction(output_path: Path):
 
     for acc in accounts:
         try:
-            sem, entries = await extract_account_routine(acc, chrome_bin)
+            sem, entries = await extract_account_routine(acc, chrome_bin, headed=headed)
             if sem:
                 latest_semester = sem
             all_entries.extend(entries)
@@ -356,10 +374,15 @@ def main():
         default=Path("routine_data.json"),
         help="Target output JSON path (default: routine_data.json)",
     )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run browser visibly for debugging (default: false / headless offscreen virtual display)",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(run_multi_account_extraction(args.output))
+        asyncio.run(run_multi_account_extraction(args.output, headed=args.headed))
     except Exception as e:
         logger.error("Scraper terminated with error: %s", e)
         sys.exit(1)

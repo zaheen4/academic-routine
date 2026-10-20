@@ -136,7 +136,10 @@ async fn main() {
             }
             return;
         }
-        Some(Commands::SyncUcam { force: _ }) => {
+        Some(Commands::SyncUcam {
+            force: _,
+            headed,
+        }) => {
             println!(
                 "🌐 {}",
                 "Connecting to UCAM portal & extracting live routine..."
@@ -148,7 +151,7 @@ async fn main() {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("routine_data.json"));
 
-            match academic_routine::run_ucam_scraper(&target_json) {
+            match academic_routine::run_ucam_scraper_opts(&target_json, *headed) {
                 Ok(path) => {
                     println!(
                         "{} Successfully extracted routine from UCAM!",

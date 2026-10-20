@@ -29,11 +29,22 @@ fn is_executable_available(name: &str) -> bool {
 
 /// Runs the standalone UCAM multi-account scraper and returns the generated routine path.
 ///
-/// Automatically uses `xvfb-run` on Linux if installed to handle headless virtual display.
+/// Runs in offscreen virtual display mode (`xvfb-run` on Linux with `WAYLAND_DISPLAY` stripped)
+/// to ensure the browser is completely invisible and no windows pop up on the desktop.
 ///
 /// # Errors
 /// Returns [`ScraperError`] if Python is missing, extraction fails, or output is absent.
 pub fn run_ucam_scraper(output_path: &Path) -> Result<PathBuf, ScraperError> {
+    run_ucam_scraper_opts(output_path, false)
+}
+
+/// Runs the standalone UCAM multi-account scraper with explicit visibility options.
+///
+/// When `headed` is false, runs strictly offscreen via an isolated Xvfb virtual framebuffer.
+///
+/// # Errors
+/// Returns [`ScraperError`] if Python is missing, extraction fails, or output is absent.
+pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf, ScraperError> {
     // 1. Resolve Python executable
     let python_candidates = [
         PathBuf::from(".venv/bin/python"),
@@ -59,31 +70,41 @@ pub fn run_ucam_scraper(output_path: &Path) -> Result<PathBuf, ScraperError> {
         .find(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("scraper/extract_ucam.py"));
 
-    // 3. Build command with xvfb-run on Linux if present
+    // 3. Build command with xvfb-run on Linux if present and not headed
     let has_xvfb = cfg!(target_os = "linux") && is_executable_available("xvfb-run");
 
-    let output = if has_xvfb {
-        Command::new("xvfb-run")
-            .args([
-                "--auto-servernum",
-                "--server-args=-screen 0 1920x1080x24",
-                python_bin.to_str().unwrap_or("python3"),
-                script_path.to_str().unwrap_or("scraper/extract_ucam.py"),
-                "--output",
-                output_path.to_str().unwrap_or("routine_data.json"),
-            ])
-            .output()
+    let mut cmd = if !headed && has_xvfb {
+        let mut c = Command::new("xvfb-run");
+        c.args([
+            "--auto-servernum",
+            "--server-args=-screen 0 1920x1080x24",
+            python_bin.to_str().unwrap_or("python3"),
+            script_path.to_str().unwrap_or("scraper/extract_ucam.py"),
+            "--output",
+            output_path.to_str().unwrap_or("routine_data.json"),
+        ]);
+        c
     } else {
-        Command::new(&python_bin)
-            .args([
-                script_path.to_str().unwrap_or("scraper/extract_ucam.py"),
-                "--output",
-                output_path.to_str().unwrap_or("routine_data.json"),
-            ])
-            .output()
+        let mut c = Command::new(&python_bin);
+        c.args([
+            script_path.to_str().unwrap_or("scraper/extract_ucam.py"),
+            "--output",
+            output_path.to_str().unwrap_or("routine_data.json"),
+        ]);
+        if headed {
+            c.arg("--headed");
+        }
+        c
     };
 
-    let result = output.map_err(|e| ScraperError::ExecutionFailed(e.to_string()))?;
+    // Crucial: remove WAYLAND_DISPLAY so Chrome cannot bypass Xvfb and render onto the desktop
+    if !headed {
+        cmd.env_remove("WAYLAND_DISPLAY");
+    }
+
+    let result = cmd
+        .output()
+        .map_err(|e| ScraperError::ExecutionFailed(e.to_string()))?;
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
