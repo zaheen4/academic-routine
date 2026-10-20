@@ -69,7 +69,20 @@ pub enum Commands {
         /// Explicit semester end date for recurrence UNTIL rule (format: YYYY-MM-DD)
         #[arg(long)]
         until: Option<String>,
+
+        /// Automatically sync exported .ics to configured GitHub Gist
+        #[arg(long)]
+        sync_gist: bool,
     },
+
+    /// Link a GitHub Gist ID for automatic live calendar sync
+    SetGist {
+        /// Gist ID (e.g. '4a7e24f1f95a405673ae900e9838f3fd')
+        id: String,
+    },
+
+    /// Sync the current routine.ics to your linked GitHub Gist immediately
+    SyncGist,
 
     /// Display teacher directory with phone numbers and emails
     Teachers,

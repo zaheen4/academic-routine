@@ -30,6 +30,9 @@ pub struct RoutineState {
     pub semester_name: String,
     /// Explicit final day of the semester (sets the RFC 5545 `UNTIL` rule).
     pub semester_end_date: Option<NaiveDate>,
+    /// Optional GitHub Gist ID used for automatic live calendar syncing.
+    #[serde(default)]
+    pub gist_id: Option<String>,
     /// Set of uppercase course codes excluded from calendars and live queries.
     pub dropped_courses: HashSet<String>,
 }
@@ -39,6 +42,7 @@ impl Default for RoutineState {
         Self {
             semester_name: "Level 4 Term 1".to_string(),
             semester_end_date: None,
+            gist_id: None,
             dropped_courses: HashSet::new(),
         }
     }
@@ -133,6 +137,7 @@ mod tests {
         let mut original = RoutineState {
             semester_name: "2026 L4T1".to_string(),
             semester_end_date: Some(NaiveDate::from_ymd_opt(2026, 11, 30).unwrap()),
+            gist_id: Some("gist123".to_string()),
             dropped_courses: HashSet::new(),
         };
         original.drop_course("CSE-4102");
@@ -145,6 +150,7 @@ mod tests {
             loaded.semester_end_date,
             Some(NaiveDate::from_ymd_opt(2026, 11, 30).unwrap())
         );
+        assert_eq!(loaded.gist_id, Some("gist123".to_string()));
         assert!(loaded.is_dropped("CSE-4102"));
     }
 }

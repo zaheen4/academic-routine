@@ -6,7 +6,7 @@ use academic_routine::{
 use chrono::{Datelike, Local, Timelike};
 use clap::Parser;
 use colored::Colorize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
@@ -33,6 +33,27 @@ fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
 
 fn state_path() -> PathBuf {
     PathBuf::from("routine_state.json")
+}
+
+fn sync_to_gist(gist_id: &str, ics_path: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "gist",
+            "edit",
+            gist_id,
+            ics_path.to_str().unwrap_or("routine.ics"),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to execute 'gh' command: {e}"))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh gist edit failed: {err}"));
+    }
+
+    Ok(format!(
+        "https://gist.githubusercontent.com/raw/{gist_id}/routine.ics"
+    ))
 }
 
 fn current_day_of_week() -> Option<DayOfWeek> {
@@ -104,6 +125,29 @@ fn main() {
                 for c in &state.dropped_courses {
                     println!("   • {}", c.bold());
                 }
+            }
+            return;
+        }
+        Some(Commands::SetGist { id }) => {
+            let clean_id = id.trim().to_string();
+            state.gist_id = Some(clean_id.clone());
+            if let Err(e) = state.save(&state_file) {
+                eprintln!("{} Failed to save state: {e}", "❌".red());
+            } else {
+                println!(
+                    "{} Linked GitHub Gist ID: {}",
+                    "🔗".green().bold(),
+                    clean_id.cyan().bold()
+                );
+                println!(
+                    "   Raw subscription URL:\n   {}",
+                    format!(
+                        "https://gist.githubusercontent.com/raw/{}/routine.ics",
+                        clean_id
+                    )
+                    .yellow()
+                    .bold()
+                );
             }
             return;
         }
@@ -227,7 +271,11 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Export { ics, until }) => {
+        Some(Commands::Export {
+            ics,
+            until,
+            sync_gist,
+        }) => {
             let end_date = if let Some(ref d_str) = until {
                 match chrono::NaiveDate::parse_from_str(d_str, "%Y-%m-%d") {
                     Ok(d) => Some(d),
@@ -255,11 +303,58 @@ fn main() {
                         println!("   • Automatic expiry (UNTIL): {}", until);
                     }
                     println!("   • Alarms included: 15-minute sound & notification popups");
+
+                    // Check if Gist sync requested or configured
+                    if sync_gist || state.gist_id.is_some() {
+                        if let Some(ref gid) = state.gist_id {
+                            println!("{} Syncing to GitHub Gist...", "🔄".cyan());
+                            match sync_to_gist(gid, &ics) {
+                                Ok(url) => {
+                                    println!(
+                                        "{} Live subscription feed updated!",
+                                        "🚀".green().bold()
+                                    );
+                                    println!(
+                                        "   Subscribe in Google Calendar: {}",
+                                        url.yellow().bold()
+                                    );
+                                }
+                                Err(e) => eprintln!("{} {e}", "❌".red()),
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("{} Failed to write .ics file: {e}", "❌".red());
                     std::process::exit(1);
                 }
+            }
+        }
+        Some(Commands::SyncGist) => {
+            let gid = match state.gist_id.as_deref() {
+                Some(id) => id,
+                None => {
+                    eprintln!(
+                        "{} No Gist linked. Run {} first.",
+                        "❌".red(),
+                        "academic-routine set-gist <ID>".cyan()
+                    );
+                    std::process::exit(1);
+                }
+            };
+
+            let ics_path = PathBuf::from("routine.ics");
+            if !ics_path.exists() {
+                let _ = export_ics_file(&schedule, &ics_path, state.semester_end_date);
+            }
+
+            println!("{} Syncing routine.ics to GitHub Gist...", "🔄".cyan());
+            match sync_to_gist(gid, &ics_path) {
+                Ok(url) => {
+                    println!("{} Live subscription feed updated!", "🚀".green().bold());
+                    println!("   Google Calendar Feed: {}", url.yellow().bold());
+                }
+                Err(e) => eprintln!("{} {e}", "❌".red()),
             }
         }
         None => {
