@@ -1,6 +1,12 @@
 # Rust build artifacts
 /target/
 
+# Python Virtual Environments
+.venv
+.venv/
+venv
+venv/
+
 # Sensitive credentials & environment keys (Never commit secrets!)
 .env
 *.token

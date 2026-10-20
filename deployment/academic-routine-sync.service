@@ -6,6 +6,10 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=%h/Documents/projects/academic-routine
-ExecStart=/usr/bin/cargo run --release -- sync-ucam --force
+Environment="PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=%h/Documents/projects/academic-routine/target/release/academic-routine sync-ucam --force
 StandardOutput=journal
 StandardError=journal
+
+[Install]
+WantedBy=default.target
