@@ -25,6 +25,71 @@ import sys
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import nodriver as nd
+import nodriver.core.browser as _nd_browser
+
+# Resilient browser launcher for containerized environments (Render / Docker)
+# Increases DevTools CDP connection timeout from 2.5s (5 retries) to 15s (30 retries)
+async def _resilient_browser_start(self=None):
+    if not self:
+        raise RuntimeError("use ``await Browser.create()`` to create a new instance")
+
+    if self._process or self._process_pid:
+        if self._process.returncode is not None:
+            return await self.create(config=self.config)
+        raise RuntimeError("ignored! this call has no effect when already running.")
+
+    connect_existing = False
+    if self.config.host is not None and self.config.port is not None:
+        connect_existing = True
+    else:
+        self.config.host = "127.0.0.1"
+        self.config.port = _nd_browser.util.free_port()
+
+    if getattr(self.config, "_extensions", None):
+        self.config.add_argument(
+            "--load-extension=%s" % ",".join(str(_) for _ in self.config._extensions)
+        )
+
+    exe = self.config.browser_executable_path
+    params = self.config()
+
+    if not connect_existing:
+        self._process = await asyncio.create_subprocess_exec(
+            exe,
+            *params,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=_nd_browser.is_posix,
+        )
+        self._process_pid = self._process.pid
+
+    self._http = _nd_browser.HTTPApi((self.config.host, self.config.port))
+    _nd_browser.util.get_registered_instances().add(self)
+    await asyncio.sleep(0.5)
+
+    for attempt in range(1, 31):
+        try:
+            self.info = _nd_browser.ContraDict(await self._http.get("version"), silent=True)
+            if self.info:
+                break
+        except Exception:
+            if self._process and self._process.returncode is not None:
+                stderr = await self._process.stderr.read()
+                raise RuntimeError(
+                    f"Browser process exited with code {self._process.returncode}: {stderr.decode(errors='ignore')}"
+                )
+            await asyncio.sleep(0.5)
+
+    if not self.info:
+        raise TimeoutError(f"Failed to connect to browser after 15 seconds.")
+
+    self.websocket_url = self.info.webSocketDebuggerUrl
+    await self.attach()
+    await self.update_targets()
+    return self
+
+_nd_browser.Browser.start = _resilient_browser_start
 
 logging.basicConfig(
     level=logging.INFO,
@@ -214,6 +279,9 @@ async def extract_account_routine(
     sec_label = account.get("section_label", "B")
 
     browser_args = [
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-software-rasterizer",
         "--ozone-platform=x11",
         "--window-size=1920,1080",
     ]
@@ -228,6 +296,7 @@ async def extract_account_routine(
     )
     browser = await nd.start(
         headless=False,
+        sandbox=False,
         browser_executable_path=chrome_bin,
         browser_args=browser_args,
     )
