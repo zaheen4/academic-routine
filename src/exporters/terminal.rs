@@ -21,6 +21,13 @@ pub fn render_day_table(schedule: &Schedule, day: DayOfWeek) -> String {
         .load_style(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic);
 
+    // If terminal width is available, set it to expand gracefully
+    if let Ok((width, _)) = crossterm::terminal::size() {
+        if width > 80 {
+            table.set_width(width);
+        }
+    }
+
     // Table Header
     table.set_header(vec![
         Cell::new("Time Slot")

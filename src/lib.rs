@@ -9,10 +9,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod cli;
 pub mod engine;
 pub mod exporters;
 pub mod model;
 
+pub use cli::{Cli, Commands};
 pub use engine::{load_routine_file, parse_routine_json, IngestError};
 pub use exporters::{render_day_table, render_today_card, render_weekly_overview};
 pub use model::{
