@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     chromium \
     xvfb \
+    xauth \
     python3 \
     python3-pip \
     python3-venv \
