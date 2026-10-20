@@ -1,0 +1,15 @@
+[Unit]
+Description=Academic Routine Assistant Telegram Bot & Scheduler Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/academic-routine
+ExecStart=/home/ubuntu/academic-routine/target/release/academic-routine bot
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/ubuntu/academic-routine/.env
+
+[Install]
+WantedBy=multi-user.target
