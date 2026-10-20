@@ -168,6 +168,68 @@ impl TimeSlot {
     pub fn ical_end_time(&self) -> String {
         self.end.format("%H%M%S").to_string()
     }
+
+    /// Returns `true` if this time slot overlaps with another time slot.
+    ///
+    /// Uses half-open intervals `[start, end)`. Adjacent slots sharing an exact
+    /// boundary (e.g. 10:30 AM end and 10:30 AM start) do **not** overlap.
+    ///
+    /// # Examples
+    /// ```
+    /// use academic_routine::TimeSlot;
+    /// use std::str::FromStr;
+    ///
+    /// let s1 = TimeSlot::from_str("09:15 - 10:30").unwrap();
+    /// let s2 = TimeSlot::from_str("10:00 - 11:15").unwrap();
+    /// let s3 = TimeSlot::from_str("10:30 - 11:45").unwrap();
+    ///
+    /// assert!(s1.overlaps_with(&s2)); // Partial clash
+    /// assert!(!s1.overlaps_with(&s3)); // Back-to-back, no clash
+    /// ```
+    #[must_use]
+    pub fn overlaps_with(&self, other: &TimeSlot) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    /// Returns the break duration in minutes between this slot and another disjoint slot.
+    ///
+    /// If the two slots overlap, returns `None`.
+    /// If the two slots are adjacent (back-to-back), returns `Some(0)`.
+    ///
+    /// # Examples
+    /// ```
+    /// use academic_routine::TimeSlot;
+    /// use std::str::FromStr;
+    ///
+    /// let morning = TimeSlot::from_str("08:00 - 09:15").unwrap();
+    /// let next = TimeSlot::from_str("10:30 - 11:45").unwrap();
+    ///
+    /// assert_eq!(morning.gap_between(&next), Some(75)); // 75-minute break
+    /// ```
+    #[must_use]
+    pub fn gap_between(&self, other: &TimeSlot) -> Option<u32> {
+        if self.overlaps_with(other) {
+            return None;
+        }
+
+        if self.end <= other.start {
+            let self_end_mins = self.end.hour() * 60 + self.end.minute();
+            let other_start_mins = other.start.hour() * 60 + other.start.minute();
+            Some(other_start_mins.saturating_sub(self_end_mins))
+        } else if other.end <= self.start {
+            let other_end_mins = other.end.hour() * 60 + other.end.minute();
+            let self_start_mins = self.start.hour() * 60 + self.start.minute();
+            Some(self_start_mins.saturating_sub(other_end_mins))
+        } else {
+            None
+        }
+    }
+
+    /// Returns `true` if the given clock time falls within this slot: `start <= time < end`.
+    #[must_use]
+    pub fn contains_time(&self, time: NaiveTime) -> bool {
+        self.start <= time && time < self.end
+    }
 }
 
 impl FromStr for TimeSlot {
@@ -296,7 +358,6 @@ mod tests {
 
     #[test]
     fn test_ucam_cross_meridiem_parsing() {
-        // "11:45 - 1:0" -> 11:45 AM to 01:00 PM (75 mins)
         let slot = TimeSlot::from_str("11:45 - 1:0").unwrap();
         assert_eq!(slot.format_12h(), "11:45 AM - 01:00 PM");
         assert_eq!(slot.duration_minutes(), 75);
@@ -305,7 +366,6 @@ mod tests {
 
     #[test]
     fn test_ucam_morning_unpadded_parsing() {
-        // "8:0 - 9:15" -> 08:00 AM to 09:15 AM
         let slot = TimeSlot::from_str("8:0 - 9:15").unwrap();
         assert_eq!(slot.format_12h(), "08:00 AM - 09:15 AM");
         assert_eq!(slot.duration_minutes(), 75);
@@ -313,7 +373,6 @@ mod tests {
 
     #[test]
     fn test_ucam_afternoon_parsing() {
-        // "2:30 - 4:0" -> 02:30 PM to 04:00 PM
         let slot = TimeSlot::from_str("2:30 - 4:0").unwrap();
         assert_eq!(slot.format_12h(), "02:30 PM - 04:00 PM");
         assert_eq!(slot.duration_minutes(), 90);
@@ -344,5 +403,53 @@ mod tests {
             TimeSlot::from_str("9:99 - 10:00"),
             Err(TimeSlotError::InvalidToken { .. })
         ));
+    }
+
+    #[test]
+    fn test_overlap_detection() {
+        let s1 = TimeSlot::from_str("09:15 - 10:30").unwrap();
+        let s2 = TimeSlot::from_str("10:00 - 11:15").unwrap(); // partial clash
+        let s3 = TimeSlot::from_str("10:30 - 11:45").unwrap(); // back-to-back adjacent
+        let s4 = TimeSlot::from_str("09:30 - 10:15").unwrap(); // completely inside s1
+
+        assert!(s1.overlaps_with(&s2));
+        assert!(s2.overlaps_with(&s1));
+        assert!(s1.overlaps_with(&s4));
+        assert!(!s1.overlaps_with(&s3)); // exact boundary -> no clash
+        assert!(!s3.overlaps_with(&s1));
+    }
+
+    #[test]
+    fn test_gap_calculation() {
+        let s1 = TimeSlot::from_str("08:00 - 09:15").unwrap();
+        let s2 = TimeSlot::from_str("10:30 - 11:45").unwrap();
+        let s_adjacent = TimeSlot::from_str("09:15 - 10:30").unwrap();
+        let s_overlap = TimeSlot::from_str("09:00 - 10:00").unwrap();
+
+        // 75-minute break between 9:15 and 10:30
+        assert_eq!(s1.gap_between(&s2), Some(75));
+        assert_eq!(s2.gap_between(&s1), Some(75));
+
+        // 0-minute break between adjacent classes
+        assert_eq!(s1.gap_between(&s_adjacent), Some(0));
+
+        // Overlapping classes have no gap
+        assert_eq!(s1.gap_between(&s_overlap), None);
+    }
+
+    #[test]
+    fn test_contains_time() {
+        let slot = TimeSlot::from_str("09:15 - 10:30").unwrap();
+        let before = NaiveTime::from_hms_opt(9, 14, 59).unwrap();
+        let at_start = NaiveTime::from_hms_opt(9, 15, 0).unwrap();
+        let inside = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+        let at_end = NaiveTime::from_hms_opt(10, 30, 0).unwrap();
+        let after = NaiveTime::from_hms_opt(10, 30, 1).unwrap();
+
+        assert!(!slot.contains_time(before));
+        assert!(slot.contains_time(at_start)); // inclusive start
+        assert!(slot.contains_time(inside));
+        assert!(!slot.contains_time(at_end)); // exclusive end
+        assert!(!slot.contains_time(after));
     }
 }
