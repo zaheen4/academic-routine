@@ -108,16 +108,26 @@ impl RoutineState {
     /// # Errors
     /// Returns [`StateError`] if the file exists but cannot be read or parsed.
     pub fn load_or_default(path: &Path) -> Result<Self, StateError> {
-        if !path.exists() {
-            return Ok(Self::default());
+        let mut state = if path.exists() {
+            let content = fs::read_to_string(path).map_err(|e| StateError::Io {
+                path: path.display().to_string(),
+                message: e.to_string(),
+            })?;
+            serde_json::from_str(&content).map_err(|e| StateError::Json(e.to_string()))?
+        } else {
+            Self::default()
+        };
+
+        if state.gist_id.is_none() {
+            if let Ok(gid) = std::env::var("GIST_ID") {
+                let clean = gid.trim();
+                if !clean.is_empty() {
+                    state.gist_id = Some(clean.to_string());
+                }
+            }
         }
 
-        let content = fs::read_to_string(path).map_err(|e| StateError::Io {
-            path: path.display().to_string(),
-            message: e.to_string(),
-        })?;
-
-        serde_json::from_str(&content).map_err(|e| StateError::Json(e.to_string()))
+        Ok(state)
     }
 
     /// Persists state as formatted JSON to the specified path.

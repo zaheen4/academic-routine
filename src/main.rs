@@ -187,6 +187,24 @@ async fn main() {
             }
             return;
         }
+        Some(Commands::Bot) => {
+            let routine_path = resolve_routine_path(cli.file.as_ref())
+                .unwrap_or_else(|| PathBuf::from("routine_data.json"));
+
+            let ctx = academic_routine::BotContext {
+                routine_path,
+                state_path: state_file,
+                section: cli
+                    .section
+                    .or_else(|| std::env::var("DEFAULT_SECTION").ok()),
+            };
+
+            if let Err(e) = academic_routine::run_bot_daemon(ctx).await {
+                eprintln!("{} {e}", "❌".red());
+                std::process::exit(1);
+            }
+            return;
+        }
         _ => {}
     }
 
@@ -391,20 +409,6 @@ async fn main() {
                     println!("   Google Calendar Feed: {}", url.yellow().bold());
                 }
                 Err(e) => eprintln!("{} {e}", "❌".red()),
-            }
-        }
-        Some(Commands::Bot) => {
-            let ctx = academic_routine::BotContext {
-                routine_path,
-                state_path: state_file,
-                section: cli
-                    .section
-                    .or_else(|| std::env::var("DEFAULT_SECTION").ok()),
-            };
-
-            if let Err(e) = academic_routine::run_bot_daemon(ctx).await {
-                eprintln!("{} {e}", "❌".red());
-                std::process::exit(1);
             }
         }
         None => {

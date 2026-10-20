@@ -69,6 +69,18 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
         }
     });
 
+    // Check if initial routine sync is needed on fresh cloud deployment
+    if !shared_ctx.routine_path.exists() {
+        println!("🌐 No routine data file found on startup. Triggering initial background UCAM sync...");
+        let target = shared_ctx.routine_path.clone();
+        tokio::task::spawn_blocking(move || {
+            match crate::engine::scraper::run_ucam_scraper(&target) {
+                Ok(path) => println!("✅ Initial routine sync complete: {}", path.display()),
+                Err(e) => eprintln!("⚠️ Initial routine sync note (send /sync in Telegram to retry): {e}"),
+            }
+        });
+    }
+
     println!("🤖 Academic Routine Telegram Bot is online and listening for messages!");
     println!("   Commands supported: /today, /next, /tomorrow, /free, /drop, /restore, /calendar, /sync");
 
