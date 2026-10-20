@@ -11,4 +11,7 @@
 
 pub mod model;
 
-pub use model::{DayOfWeek, ParseDayError, TimeSlot, TimeSlotError};
+pub use model::{
+    CourseEntry, DayOfWeek, ParseDayError, Schedule, ScheduleConflict, TeacherContact, TimeSlot,
+    TimeSlotError,
+};
