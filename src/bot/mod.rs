@@ -8,6 +8,7 @@ pub use scheduler::start_morning_scheduler;
 
 use std::sync::Arc;
 use teloxide::prelude::*;
+use teloxide::utils::command::BotCommands;
 
 /// Launches the interactive Telegram bot daemon and 6:00 AM morning scheduler.
 ///
@@ -26,6 +27,14 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
     }
 
     let bot = Bot::from_env();
+
+    // Register command menu popup with Telegram (enables the "/" suggestion popup)
+    if let Err(e) = bot.set_my_commands(Command::bot_commands()).await {
+        eprintln!("⚠️ Failed to register bot command menu: {e}");
+    } else {
+        println!("✨ Successfully registered command menu with Telegram ('/' suggestions active)!");
+    }
+
     let shared_ctx = Arc::new(ctx);
 
     // Spawn 6:00 AM scheduler if TELEGRAM_CHAT_ID is set
