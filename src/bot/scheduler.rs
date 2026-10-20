@@ -29,6 +29,11 @@ pub async fn start_morning_scheduler(bot: Bot, target_chat_id: i64, ctx: Arc<Bot
 }
 
 async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotContext>) {
+    // Attempt automated refresh from Gist so briefings always reflect the latest routine
+    if let Err(e) = ctx.refresh_from_gist().await {
+        eprintln!("Pre-briefing Gist sync note: {e}");
+    }
+
     let today = match current_academic_day() {
         Some(d) => d,
         None => return,

@@ -71,12 +71,19 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
 
     // Check if initial routine sync is needed on fresh cloud deployment
     if !shared_ctx.routine_path.exists() {
-        println!("🌐 No routine data file found on startup. Triggering initial background UCAM sync...");
-        let target = shared_ctx.routine_path.clone();
-        tokio::task::spawn_blocking(move || {
-            match crate::engine::scraper::run_ucam_scraper(&target) {
-                Ok(path) => println!("✅ Initial routine sync complete: {}", path.display()),
-                Err(e) => eprintln!("⚠️ Initial routine sync note (send /sync in Telegram to retry): {e}"),
+        let startup_ctx = Arc::clone(&shared_ctx);
+        tokio::spawn(async move {
+            println!("🌐 No routine data file found on startup. Checking cloud Gist feed...");
+            match startup_ctx.refresh_from_gist().await {
+                Ok(url) => println!("✅ Initial routine synced from Gist: {url}"),
+                Err(e) => {
+                    eprintln!("⚠️ Gist initial sync note: {e}. Falling back to portal scrape...");
+                    let target = startup_ctx.routine_path.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::engine::scraper::run_ucam_scraper(&target)
+                    })
+                    .await;
+                }
             }
         });
     }

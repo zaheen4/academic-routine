@@ -97,6 +97,31 @@ impl BotContext {
 
         Ok("routine.ics".to_string())
     }
+
+    /// Refreshes routine_data.json from GitHub Gist, writes it locally, and updates calendar feed.
+    pub async fn refresh_from_gist(&self) -> Result<String, String> {
+        let state = RoutineState::load_or_default(&self.state_path).unwrap_or_default();
+        let gid = match state.gist_id.as_deref() {
+            Some(id) => id.to_string(),
+            None => std::env::var("GIST_ID")
+                .map_err(|_| "No Gist ID configured in state or environment.".to_string())?,
+        };
+
+        let json_content = crate::exporters::gist::fetch_gist_routine_data(&gid).await?;
+
+        // Validate JSON integrity
+        let _parsed = crate::engine::parser::parse_routine_json(&json_content)
+            .map_err(|e| format!("Invalid routine data from Gist: {e}"))?;
+
+        // Save atomically to routine_path
+        let tmp_path = self.routine_path.with_extension("tmp");
+        std::fs::write(&tmp_path, &json_content)
+            .map_err(|e| format!("Failed to write routine data: {e}"))?;
+        std::fs::rename(&tmp_path, &self.routine_path)
+            .map_err(|e| format!("Failed to commit routine data: {e}"))?;
+
+        self.regenerate_and_sync().await
+    }
 }
 
 /// Dispatches an incoming Telegram command using reliable HTML formatting.
@@ -508,9 +533,41 @@ pub async fn handle_command(
         }
 
         Command::Sync => {
+            // Check if Gist sync is available (fast, 100% reliable, zero Cloudflare blocks)
+            let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            let has_gist = state.gist_id.is_some() || std::env::var("GIST_ID").is_ok();
+
+            if has_gist {
+                bot.send_message(
+                    chat_id,
+                    "🔄 <b>Synchronizing with Cloud Feed...</b>\nFetching latest timetable from your linked GitHub Gist.",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+
+                match ctx.refresh_from_gist().await {
+                    Ok(url) => {
+                        let resp = format!(
+                            "✅ <b>Routine Successfully Synchronized with Cloud Feed!</b>\n\
+                             All class schedules, room assignments, and faculty contacts are up to date.\n\n\
+                             🔄 <i>Calendar feed:</i>\n<code>{}</code>\n\n\
+                             <i>Send /today or /calendar to view your updated routine.</i>",
+                            escape_html(&url)
+                        );
+                        bot.send_message(chat_id, resp)
+                            .parse_mode(ParseMode::Html)
+                            .await?;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Gist refresh notice: {e}. Attempting direct UCAM scrape fallback...");
+                    }
+                }
+            }
+
             bot.send_message(
                 chat_id,
-                "🔄 <b>Connecting to UCAM portal...</b>\nPulling the latest class routine, teacher contacts, and room assignments. This takes ~35 seconds.",
+                "🔄 <b>Connecting to UCAM portal...</b>\nPulling the latest class routine, teacher contacts, and room assignments. This takes ~25 seconds.",
             )
             .parse_mode(ParseMode::Html)
             .await?;
@@ -545,7 +602,9 @@ pub async fn handle_command(
                     bot.send_message(
                         chat_id,
                         format!(
-                            "❌ <b>UCAM Sync Failed:</b>\n<code>{}</code>",
+                            "❌ <b>UCAM Direct Sync Notice:</b>\n<code>{}</code>\n\n\
+                             💡 <b>Clean Sync Recommendation:</b>\n\
+                             Run <code>cargo run -- sync-ucam</code> on your local PC (clean residential IP) to update your Gist, then tap /sync here to pull updates instantly!",
                             escape_html(&e.to_string())
                         ),
                     )

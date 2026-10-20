@@ -167,10 +167,11 @@ async fn main() {
                         let _ = export_ics_file(&raw_sched, &ics_path, state.semester_end_date);
 
                         if let Some(ref gid) = state.gist_id {
-                            println!("🔄 Syncing updated routine to GitHub Gist...");
-                            match academic_routine::sync_gist_file(gid, &ics_path).await {
+                            println!("🔄 Syncing routine data and calendar to GitHub Gist...");
+                            match academic_routine::sync_gist_bundle(gid, &ics_path, &path).await {
                                 Ok(url) => {
-                                    println!("🚀 Live feed updated: {}", url.yellow().bold())
+                                    println!("🚀 Live subscription feed updated: {}", url.yellow().bold());
+                                    println!("   • Synced both routine.ics and routine_data.json to Gist!");
                                 }
                                 Err(e) => eprintln!("⚠️ Gist sync notice: {e}"),
                             }
@@ -402,8 +403,15 @@ async fn main() {
                 let _ = export_ics_file(&schedule, &ics_path, state.semester_end_date);
             }
 
-            println!("{} Syncing routine.ics to GitHub Gist...", "🔄".cyan());
-            match academic_routine::sync_gist_file(gid, &ics_path).await {
+            println!("{} Syncing routine and calendar to GitHub Gist...", "🔄".cyan());
+            let json_path = PathBuf::from("routine_data.json");
+            let result = if json_path.exists() {
+                academic_routine::sync_gist_bundle(gid, &ics_path, &json_path).await
+            } else {
+                academic_routine::sync_gist_file(gid, &ics_path).await
+            };
+
+            match result {
                 Ok(url) => {
                     println!("{} Live subscription feed updated!", "🚀".green().bold());
                     println!("   Google Calendar Feed: {}", url.yellow().bold());

@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly Academic Routine Synchronization Timer
+
+[Timer]
+# Run weekly every Saturday at 05:00 AM (start of academic week)
+OnCalendar=Sat *-*-* 05:00:00
+# Run on boot if the scheduled time was missed while the computer was off
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

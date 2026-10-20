@@ -1,0 +1,11 @@
+[Unit]
+Description=Academic Routine Weekly UCAM Extraction & Gist Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documents/projects/academic-routine
+ExecStart=/usr/bin/cargo run --release -- sync-ucam --force
+StandardOutput=journal
+StandardError=journal
