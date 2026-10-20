@@ -48,25 +48,59 @@ impl Default for RoutineState {
     }
 }
 
+/// Helper to check whether two course codes match, ignoring case and punctuation (e.g. '-' or ' ').
+#[must_use]
+pub fn codes_match(a: &str, b: &str) -> bool {
+    let clean_a: String = a
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_uppercase())
+        .collect();
+    let clean_b: String = b
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_uppercase())
+        .collect();
+    !clean_a.is_empty() && clean_a == clean_b
+}
+
 impl RoutineState {
     /// Drops a course by its code, marking it to be hidden from calendar and queries.
     ///
     /// Returns `true` if the course was newly added to the dropped set.
     pub fn drop_course(&mut self, code: &str) -> bool {
-        self.dropped_courses.insert(code.trim().to_uppercase())
+        let clean = code.trim().to_uppercase();
+        if clean.is_empty() || self.is_dropped(&clean) {
+            return false;
+        }
+        self.dropped_courses.insert(clean)
     }
 
     /// Restores a previously dropped course.
     ///
     /// Returns `true` if the course was present and removed from the dropped set.
     pub fn restore_course(&mut self, code: &str) -> bool {
-        self.dropped_courses.remove(&code.trim().to_uppercase())
+        let to_remove: Vec<String> = self
+            .dropped_courses
+            .iter()
+            .filter(|d| codes_match(d, code))
+            .cloned()
+            .collect();
+
+        if to_remove.is_empty() {
+            false
+        } else {
+            for r in to_remove {
+                self.dropped_courses.remove(&r);
+            }
+            true
+        }
     }
 
     /// Checks if a course is currently marked as dropped.
     #[must_use]
     pub fn is_dropped(&self, code: &str) -> bool {
-        self.dropped_courses.contains(&code.trim().to_uppercase())
+        self.dropped_courses.iter().any(|d| codes_match(d, code))
     }
 
     /// Loads persisted state from a file, or returns the default state if the file does not exist.
@@ -120,13 +154,17 @@ mod tests {
         assert!(state.drop_course("cse-4101"));
         assert!(state.is_dropped("CSE-4101"));
         assert!(state.is_dropped("cse-4101 "));
+        assert!(state.is_dropped("CSE 4101")); // spaces match
+        assert!(state.is_dropped("cse4101")); // no separator matches
 
         // Dropping again returns false
         assert!(!state.drop_course("CSE-4101"));
+        assert!(!state.drop_course("CSE 4101"));
 
-        // Restore
-        assert!(state.restore_course("cse-4101"));
+        // Restore using space format
+        assert!(state.restore_course("cse 4101"));
         assert!(!state.is_dropped("CSE-4101"));
+        assert!(!state.is_dropped("cse 4101"));
     }
 
     #[test]

@@ -102,7 +102,11 @@ impl Schedule {
         let filtered = self
             .entries
             .iter()
-            .filter(|e| !dropped_codes.contains(&e.code))
+            .filter(|e| {
+                !dropped_codes
+                    .iter()
+                    .any(|d| crate::model::state::codes_match(d, &e.code))
+            })
             .cloned()
             .collect();
 

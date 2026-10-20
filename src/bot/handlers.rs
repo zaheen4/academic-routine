@@ -13,7 +13,7 @@ use teloxide::types::{InputFile, ParseMode};
 use teloxide::utils::command::BotCommands;
 
 /// Available Telegram bot commands.
-#[derive(BotCommands, Clone, Debug)]
+#[derive(BotCommands, Clone, Debug, PartialEq, Eq)]
 #[command(
     rename_rule = "lowercase",
     description = "🎓 University Routine Assistant Commands:"
@@ -550,4 +550,86 @@ pub fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_html() {
+        assert_eq!(escape_html("Hello & World"), "Hello &amp; World");
+        assert_eq!(
+            escape_html("<script>alert(1)</script>"),
+            "&lt;script&gt;alert(1)&lt;/script&gt;"
+        );
+        assert_eq!(escape_html("Room 612 (Lab)"), "Room 612 (Lab)");
+        assert_eq!(escape_html("CSE-4101"), "CSE-4101");
+    }
+
+    #[test]
+    fn test_command_parsing() {
+        assert_eq!(Command::parse("/start", "").unwrap(), Command::Start);
+        assert_eq!(Command::parse("/help", "").unwrap(), Command::Help);
+        assert_eq!(Command::parse("/today", "").unwrap(), Command::Today);
+        assert_eq!(Command::parse("/next", "").unwrap(), Command::Next);
+        assert_eq!(Command::parse("/tomorrow", "").unwrap(), Command::Tomorrow);
+        assert_eq!(Command::parse("/free", "").unwrap(), Command::Free);
+        assert_eq!(Command::parse("/teachers", "").unwrap(), Command::Teachers);
+        assert_eq!(Command::parse("/dropped", "").unwrap(), Command::Dropped);
+        assert_eq!(Command::parse("/calendar", "").unwrap(), Command::Calendar);
+        assert_eq!(
+            Command::parse("/drop CSE-4125", "").unwrap(),
+            Command::Drop("CSE-4125".to_string())
+        );
+        assert_eq!(
+            Command::parse("/restore CSE-4125", "").unwrap(),
+            Command::Restore("CSE-4125".to_string())
+        );
+    }
+
+    #[test]
+    fn test_bot_context_load_active_schedule() {
+        let scraper_path = PathBuf::from(
+            "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
+        );
+        if !scraper_path.exists() {
+            return;
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state_path = temp_dir.path().join("state.json");
+
+        let ctx = BotContext {
+            routine_path: scraper_path,
+            state_path: state_path.clone(),
+            section: Some("B2".to_string()),
+        };
+
+        // 1. Initial load with section B2
+        let (sched, state) = ctx.load_active_schedule().expect("Failed to load schedule");
+        assert!(!sched.entries.is_empty());
+        assert!(state.dropped_courses.is_empty());
+        let initial_count = sched.entries.len();
+
+        // 2. Drop a course (which has 2 weekly class sessions)
+        let mut state_to_save = state;
+        assert!(state_to_save.drop_course("CSE-4101"));
+        state_to_save.save(&state_path).unwrap();
+
+        // 3. Reload schedule and verify course is excluded
+        let (filtered_sched, _) = ctx.load_active_schedule().unwrap();
+        assert!(!filtered_sched.all_course_codes().contains("CSE-4101"));
+        assert!(filtered_sched.entries.len() < initial_count);
+
+        // 4. Restore the course using space-separated format
+        let mut state_to_restore = RoutineState::load_or_default(&state_path).unwrap();
+        assert!(state_to_restore.restore_course("cse 4101"));
+        state_to_restore.save(&state_path).unwrap();
+
+        // 5. Reload and verify restored
+        let (restored_sched, _) = ctx.load_active_schedule().unwrap();
+        assert_eq!(restored_sched.entries.len(), initial_count);
+        assert!(restored_sched.all_course_codes().contains("CSE-4101"));
+    }
 }

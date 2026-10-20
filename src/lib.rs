@@ -15,7 +15,7 @@ pub mod engine;
 pub mod exporters;
 pub mod model;
 
-pub use bot::{run_bot_daemon, BotContext};
+pub use bot::{run_bot_daemon, BotContext, Command};
 pub use cli::{Cli, Commands};
 pub use engine::{load_routine_file, parse_routine_json, IngestError};
 pub use exporters::{
