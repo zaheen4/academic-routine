@@ -9,11 +9,13 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod bot;
 pub mod cli;
 pub mod engine;
 pub mod exporters;
 pub mod model;
 
+pub use bot::{run_bot_daemon, BotContext};
 pub use cli::{Cli, Commands};
 pub use engine::{load_routine_file, parse_routine_json, IngestError};
 pub use exporters::{

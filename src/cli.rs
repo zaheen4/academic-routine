@@ -84,6 +84,9 @@ pub enum Commands {
     /// Sync the current routine.ics to your linked GitHub Gist immediately
     SyncGist,
 
+    /// Run the interactive Telegram Assistant Bot and 6:00 AM alert daemon
+    Bot,
+
     /// Display teacher directory with phone numbers and emails
     Teachers,
 }
