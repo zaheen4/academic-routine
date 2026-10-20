@@ -1,6 +1,6 @@
 //! Scheduled morning briefings and proactive notifications.
 
-use crate::bot::handlers::{escape_md, BotContext};
+use crate::bot::handlers::{escape_html, BotContext};
 use crate::model::day::DayOfWeek;
 use chrono::{Datelike, Local, NaiveTime};
 use std::sync::Arc;
@@ -48,34 +48,34 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
     }
 
     let mut msg = format!(
-        "🌅 *Good Morning! Academic Daily Briefing*\n\n\
-         Today is *{}* — you have *{}* class(es) scheduled:\n\n",
+        "🌅 <b>Good Morning! Academic Daily Briefing</b>\n\n\
+         Today is <b>{}</b> — you have <b>{}</b> class(es) scheduled:\n\n",
         today.full_name(),
         classes.len()
     );
 
     for (i, c) in classes.iter().enumerate() {
-        let lab_badge = if c.is_lab() { " 🔬 _[LAB]_" } else { "" };
+        let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
         msg.push_str(&format!(
-            "{}\\. *{}* \\| Room *{}*\n   └ `{}`: *{}*{}\n",
+            "{}. <b>{}</b> | Room <b>{}</b>\n   └ <code>{}</code>: <b>{}</b>{}\n",
             i + 1,
-            escape_md(&c.time_slot.format_12h()),
-            escape_md(&c.room),
-            escape_md(&c.code),
-            escape_md(&c.title),
+            escape_html(&c.time_slot.format_12h()),
+            escape_html(&c.room),
+            escape_html(&c.code),
+            escape_html(&c.title),
             lab_badge
         ));
         if !c.teacher.name.is_empty() {
-            msg.push_str(&format!("     👤 {}\n", escape_md(&c.teacher.name)));
+            msg.push_str(&format!("     👤 {}\n", escape_html(&c.teacher.name)));
         }
         msg.push('\n');
     }
 
-    msg.push_str("💡 _Have a productive day! Send `/today` or `/next` anytime for updates._");
+    msg.push_str("💡 <i>Have a productive day! Send /today or /next anytime for updates.</i>");
 
     let _ = bot
         .send_message(ChatId(target_chat_id), msg)
-        .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+        .parse_mode(teloxide::types::ParseMode::Html)
         .await;
 }
 

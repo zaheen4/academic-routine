@@ -9,7 +9,7 @@ use chrono::{Datelike, Local, Timelike};
 use std::path::PathBuf;
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::InputFile;
+use teloxide::types::{InputFile, ParseMode};
 use teloxide::utils::command::BotCommands;
 
 /// Available Telegram bot commands.
@@ -106,7 +106,7 @@ impl BotContext {
     }
 }
 
-/// Dispatches an incoming Telegram command.
+/// Dispatches an incoming Telegram command using reliable HTML formatting.
 pub async fn handle_command(
     bot: Bot,
     msg: Message,
@@ -118,17 +118,19 @@ pub async fn handle_command(
     match cmd {
         Command::Help | Command::Start => {
             let help_text = format!(
-                "🎓 *Welcome to your Academic Routine Assistant!*\n\n\
+                "🎓 <b>Welcome to your Academic Routine Assistant!</b>\n\n\
                  {}\n\n\
-                 💡 *Tips:*\n\
-                 • Send `/today` to see your schedule for today.\n\
-                 • Send `/next` to see what class is coming up next.\n\
-                 • Send `/calendar` to receive the `.ics` file directly on your phone!\n\
-                 • Send `/drop <CODE>` to drop a course on the fly.",
-                Command::descriptions()
+                 💡 <b>Quick Tips:</b>\n\
+                 • Send <code>/today</code> to see your schedule for today.\n\
+                 • Send <code>/next</code> to see what class is coming up next.\n\
+                 • Send <code>/tomorrow</code> to preview tomorrow's classes.\n\
+                 • Send <code>/free</code> to find breaks between classes.\n\
+                 • Send <code>/calendar</code> to receive the .ics file on your phone!\n\
+                 • Send <code>/drop &lt;CODE&gt;</code> to drop a course on the fly.",
+                escape_html(&Command::descriptions().to_string())
             );
             bot.send_message(chat_id, help_text)
-                .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                .parse_mode(ParseMode::Html)
                 .await?;
         }
 
@@ -147,35 +149,39 @@ pub async fn handle_command(
             if classes.is_empty() {
                 bot.send_message(
                     chat_id,
-                    format!("🎉 No classes scheduled for today ({today})! Enjoy your free time."),
+                    format!(
+                        "🎉 No classes scheduled for today ({})! Enjoy your free time.",
+                        today.full_name()
+                    ),
                 )
                 .await?;
                 return Ok(());
             }
 
             let mut text = format!(
-                "📅 *Schedule for Today ({})* — {} classes\n\n",
+                "📅 <b>Schedule for Today ({})</b> — {} class(es)\n\n",
                 today.full_name(),
                 classes.len()
             );
+
             for c in classes {
-                let lab_badge = if c.is_lab() { " 🔬 _[LAB]_" } else { "" };
+                let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
                 text.push_str(&format!(
-                    "• *{}* \\| Room *{}*\n  └ `{}`: *{}*{}\n",
-                    escape_md(&c.time_slot.format_12h()),
-                    escape_md(&c.room),
-                    escape_md(&c.code),
-                    escape_md(&c.title),
+                    "• <b>{}</b> | Room <b>{}</b>\n  └ <code>{}</code>: <b>{}</b>{}\n",
+                    c.time_slot.format_12h(),
+                    c.room,
+                    c.code,
+                    escape_html(&c.title),
                     lab_badge
                 ));
                 if !c.teacher.name.is_empty() {
-                    text.push_str(&format!("    👤 {}\n", escape_md(&c.teacher.name)));
+                    text.push_str(&format!("    👤 {}\n", escape_html(&c.teacher.name)));
                 }
                 text.push('\n');
             }
 
             bot.send_message(chat_id, text)
-                .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                .parse_mode(ParseMode::Html)
                 .await?;
         }
 
@@ -197,40 +203,40 @@ pub async fn handle_command(
                     + active.time_slot.end().minute())
                 .saturating_sub(now.hour() * 60 + now.minute());
                 let msg_text = format!(
-                    "🔴 *CURRENTLY IN SESSION*\n\n\
-                     • Course: *{}* ({})\n\
-                     • Room: *Room {}*\n\
-                     • Time: *{}* \\(ends in {} mins\\)\n\
+                    "🔴 <b>CURRENTLY IN SESSION</b>\n\n\
+                     • Course: <b>{}</b> ({})\n\
+                     • Room: <b>Room {}</b>\n\
+                     • Time: <b>{}</b> (ends in {} mins)\n\
                      • Teacher: {}",
-                    escape_md(&active.code),
-                    escape_md(&active.title),
-                    escape_md(&active.room),
-                    escape_md(&active.time_slot.format_12h()),
+                    active.code,
+                    escape_html(&active.title),
+                    active.room,
+                    active.time_slot.format_12h(),
                     mins_left,
-                    escape_md(&active.teacher.name)
+                    escape_html(&active.teacher.name)
                 );
                 bot.send_message(chat_id, msg_text)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    .parse_mode(ParseMode::Html)
                     .await?;
             } else if let Some(next) = classes.iter().find(|c| c.time_slot.start() > now) {
                 let mins_until = (next.time_slot.start().hour() * 60
                     + next.time_slot.start().minute())
                 .saturating_sub(now.hour() * 60 + now.minute());
                 let msg_text = format!(
-                    "🟢 *NEXT UPCOMING CLASS*\n\n\
-                     • Course: *{}* ({})\n\
-                     • Room: *Room {}*\n\
-                     • Time: *{}* \\(starts in {} mins\\)\n\
+                    "🟢 <b>NEXT UPCOMING CLASS</b>\n\n\
+                     • Course: <b>{}</b> ({})\n\
+                     • Room: <b>Room {}</b>\n\
+                     • Time: <b>{}</b> (starts in {} mins)\n\
                      • Teacher: {}",
-                    escape_md(&next.code),
-                    escape_md(&next.title),
-                    escape_md(&next.room),
-                    escape_md(&next.time_slot.format_12h()),
+                    next.code,
+                    escape_html(&next.title),
+                    next.room,
+                    next.time_slot.format_12h(),
                     mins_until,
-                    escape_md(&next.teacher.name)
+                    escape_html(&next.teacher.name)
                 );
                 bot.send_message(chat_id, msg_text)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    .parse_mode(ParseMode::Html)
                     .await?;
             } else {
                 bot.send_message(
@@ -266,24 +272,25 @@ pub async fn handle_command(
             }
 
             let mut text = format!(
-                "🌅 *Preview for Tomorrow ({})* — {} classes\n\n",
+                "🌅 <b>Preview for Tomorrow ({})</b> — {} class(es)\n\n",
                 tomorrow.full_name(),
                 classes.len()
             );
+
             for c in classes {
-                let lab_badge = if c.is_lab() { " 🔬 _[LAB]_" } else { "" };
+                let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
                 text.push_str(&format!(
-                    "• *{}* \\| Room *{}*\n  └ `{}`: *{}*{}\n",
-                    escape_md(&c.time_slot.format_12h()),
-                    escape_md(&c.room),
-                    escape_md(&c.code),
-                    escape_md(&c.title),
+                    "• <b>{}</b> | Room <b>{}</b>\n  └ <code>{}</code>: <b>{}</b>{}\n",
+                    c.time_slot.format_12h(),
+                    c.room,
+                    c.code,
+                    escape_html(&c.title),
                     lab_badge
                 ));
             }
 
             bot.send_message(chat_id, text)
-                .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                .parse_mode(ParseMode::Html)
                 .await?;
         }
 
@@ -325,12 +332,12 @@ pub async fn handle_command(
                         };
 
                         breaks.push(format!(
-                            "☕ *{}* \\({} to {}\\)\n   Between `{}` and `{}`",
-                            escape_md(&duration_str),
-                            escape_md(&cur.time_slot.end().format("%I:%M %p").to_string()),
-                            escape_md(&next.time_slot.start().format("%I:%M %p").to_string()),
-                            escape_md(&cur.code),
-                            escape_md(&next.code)
+                            "☕ <b>{}</b> ({} to {})\n   Between <code>{}</code> and <code>{}</code>",
+                            duration_str,
+                            cur.time_slot.end().format("%I:%M %p"),
+                            next.time_slot.start().format("%I:%M %p"),
+                            cur.code,
+                            next.code
                         ));
                     }
                 }
@@ -343,12 +350,15 @@ pub async fn handle_command(
                 )
                 .await?;
             } else {
-                let mut text = format!("☕ *Break Windows for Today ({})*:\n\n", today.full_name());
+                let mut text = format!(
+                    "☕ <b>Break Windows for Today ({})</b>:\n\n",
+                    today.full_name()
+                );
                 for b in breaks {
                     text.push_str(&format!("• {b}\n\n"));
                 }
                 bot.send_message(chat_id, text)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    .parse_mode(ParseMode::Html)
                     .await?;
             }
         }
@@ -364,22 +374,22 @@ pub async fn handle_command(
 
             let dir = sched.teacher_directory();
             let mut text = format!(
-                "📚 *Instructor Directory* \\({} teachers\\):\n\n",
+                "📚 <b>Instructor Directory</b> ({} teachers):\n\n",
                 dir.len()
             );
             for (name, contact) in dir {
-                text.push_str(&format!("• *{}*\n", escape_md(&name)));
+                text.push_str(&format!("• <b>{}</b>\n", escape_html(&name)));
                 if let Some(ref p) = contact.phone {
-                    text.push_str(&format!("  ☎ Phone: `{}`\n", escape_md(p)));
+                    text.push_str(&format!("  ☎ Phone: <code>{}</code>\n", escape_html(p)));
                 }
                 if let Some(ref e) = contact.email {
-                    text.push_str(&format!("  ✉ Email: `{}`\n", escape_md(e)));
+                    text.push_str(&format!("  ✉ Email: <code>{}</code>\n", escape_html(e)));
                 }
                 text.push('\n');
             }
 
             bot.send_message(chat_id, text)
-                .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                .parse_mode(ParseMode::Html)
                 .await?;
         }
 
@@ -388,8 +398,9 @@ pub async fn handle_command(
             if clean_code.is_empty() {
                 bot.send_message(
                     chat_id,
-                    "⚠️ Please provide a course code to drop (e.g. `/drop CSE-4101`)",
+                    "⚠️ Please provide a course code to drop (e.g. <code>/drop CSE-4101</code>)",
                 )
+                .parse_mode(ParseMode::Html)
                 .await?;
                 return Ok(());
             }
@@ -398,26 +409,28 @@ pub async fn handle_command(
             if state.drop_course(&clean_code) {
                 let _ = state.save(&ctx.state_path);
                 let sync_msg = match ctx.regenerate_and_sync() {
-                    Ok(url) => format!("\n🔄 _Calendar feed updated:_\n`{}`", escape_md(&url)),
-                    Err(e) => format!("\n⚠️ _Could not sync Gist: {}_", escape_md(&e)),
+                    Ok(url) => format!(
+                        "\n🔄 <i>Calendar feed updated:</i>\n<code>{}</code>",
+                        escape_html(&url)
+                    ),
+                    Err(e) => format!("\n⚠️ <i>Could not sync Gist: {}</i>", escape_html(&e)),
                 };
 
                 let resp = format!(
-                    "✅ *Dropped course `{}`!*\n\
-                     It has been excluded from your schedule, Telegram alerts, and `.ics` feed.{}\n\n\
-                     _To undo, send `/restore {}`_",
-                    escape_md(&clean_code),
-                    sync_msg,
-                    escape_md(&clean_code)
+                    "✅ <b>Dropped course <code>{}</code>!</b>\n\
+                     It has been excluded from your schedule, Telegram alerts, and .ics feed.{}\n\n\
+                     <i>To undo, send <code>/restore {}</code></i>",
+                    clean_code, sync_msg, clean_code
                 );
                 bot.send_message(chat_id, resp)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    .parse_mode(ParseMode::Html)
                     .await?;
             } else {
                 bot.send_message(
                     chat_id,
-                    format!("ℹ️ Course `{clean_code}` is already marked as dropped."),
+                    format!("ℹ️ Course <code>{clean_code}</code> is already marked as dropped."),
                 )
+                .parse_mode(ParseMode::Html)
                 .await?;
             }
         }
@@ -425,11 +438,9 @@ pub async fn handle_command(
         Command::Restore(code) => {
             let clean_code = code.trim().to_uppercase();
             if clean_code.is_empty() {
-                bot.send_message(
-                    chat_id,
-                    "⚠️ Please provide a course code to restore (e.g. `/restore CSE-4101`)",
-                )
-                .await?;
+                bot.send_message(chat_id, "⚠️ Please provide a course code to restore (e.g. <code>/restore CSE-4101</code>)")
+                    .parse_mode(ParseMode::Html)
+                    .await?;
                 return Ok(());
             }
 
@@ -437,24 +448,27 @@ pub async fn handle_command(
             if state.restore_course(&clean_code) {
                 let _ = state.save(&ctx.state_path);
                 let sync_msg = match ctx.regenerate_and_sync() {
-                    Ok(url) => format!("\n🔄 _Calendar feed updated:_\n`{}`", escape_md(&url)),
-                    Err(e) => format!("\n⚠️ _Could not sync Gist: {}_", escape_md(&e)),
+                    Ok(url) => format!(
+                        "\n🔄 <i>Calendar feed updated:</i>\n<code>{}</code>",
+                        escape_html(&url)
+                    ),
+                    Err(e) => format!("\n⚠️ <i>Could not sync Gist: {}</i>", escape_html(&e)),
                 };
 
                 let resp = format!(
-                    "✅ *Restored course `{}`!*\n\
+                    "✅ <b>Restored course <code>{}</code>!</b>\n\
                      It will now appear on your schedule and calendar exports.{}",
-                    escape_md(&clean_code),
-                    sync_msg
+                    clean_code, sync_msg
                 );
                 bot.send_message(chat_id, resp)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    .parse_mode(ParseMode::Html)
                     .await?;
             } else {
                 bot.send_message(
                     chat_id,
-                    format!("ℹ️ Course `{clean_code}` was not in the dropped list."),
+                    format!("ℹ️ Course <code>{clean_code}</code> was not in the dropped list."),
                 )
+                .parse_mode(ParseMode::Html)
                 .await?;
             }
         }
@@ -465,13 +479,15 @@ pub async fn handle_command(
                 bot.send_message(chat_id, "ℹ️ No courses are currently dropped.")
                     .await?;
             } else {
-                let mut text = "🚫 *Currently Dropped Courses:*\n\n".to_string();
+                let mut text = "🚫 <b>Currently Dropped Courses:</b>\n\n".to_string();
                 for c in &state.dropped_courses {
-                    text.push_str(&format!("• `{}`\n", escape_md(c)));
+                    text.push_str(&format!("• <code>{}</code>\n", escape_html(c)));
                 }
-                text.push_str("\n_Send `/restore <CODE>` to re-enable any course._");
+                text.push_str(
+                    "\n<i>Send <code>/restore &lt;CODE&gt;</code> to re-enable any course.</i>",
+                );
                 bot.send_message(chat_id, text)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    .parse_mode(ParseMode::Html)
                     .await?;
             }
         }
@@ -493,8 +509,8 @@ pub async fn handle_command(
             }
 
             bot.send_document(chat_id, InputFile::file(&ics_path))
-                .caption("📅 *Your University Class Schedule (.ics)*\n\nTap this file on your phone to import all classes and 15-minute alarms directly into your calendar app with 1 tap!")
-                .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                .caption("📅 <b>Your University Class Schedule (.ics)</b>\n\nTap this file on your phone to import all classes and 15-minute alarms directly into your calendar app with 1 tap!")
+                .parse_mode(ParseMode::Html)
                 .await?;
         }
     }
@@ -528,17 +544,10 @@ fn next_academic_day() -> DayOfWeek {
     }
 }
 
-/// Escapes reserved characters for Telegram MarkdownV2 format.
-pub fn escape_md(text: &str) -> String {
-    let reserved = [
-        '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
-    ];
-    let mut out = String::with_capacity(text.len() * 2);
-    for c in text.chars() {
-        if reserved.contains(&c) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
+/// Escapes HTML special characters for Telegram HTML mode.
+#[must_use]
+pub fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

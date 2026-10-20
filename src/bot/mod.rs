@@ -46,7 +46,24 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
     let handler_ctx = Arc::clone(&shared_ctx);
     Command::repl(bot, move |b: Bot, msg: Message, cmd: Command| {
         let c = Arc::clone(&handler_ctx);
-        async move { handle_command(b, msg, cmd, c).await }
+        async move {
+            let sender = msg
+                .from
+                .as_ref()
+                .map(|u| u.first_name.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+            println!(
+                "📩 Received command: {:?} from {} (Chat ID: {})",
+                cmd, sender, msg.chat.id
+            );
+            let res = handle_command(b, msg, cmd, c).await;
+            if let Err(ref e) = res {
+                eprintln!("❌ Telegram API error: {e:?}");
+            } else {
+                println!("✅ Successfully replied to command.");
+            }
+            res
+        }
     })
     .await;
 
