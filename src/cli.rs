@@ -60,6 +60,17 @@ pub enum Commands {
     /// List all currently dropped/hidden courses
     Dropped,
 
+    /// Export schedule to calendar or file formats
+    Export {
+        /// Export to iCalendar (.ics) format file path (defaults to 'routine.ics')
+        #[arg(long, default_value = "routine.ics")]
+        ics: PathBuf,
+
+        /// Explicit semester end date for recurrence UNTIL rule (format: YYYY-MM-DD)
+        #[arg(long)]
+        until: Option<String>,
+    },
+
     /// Display teacher directory with phone numbers and emails
     Teachers,
 }

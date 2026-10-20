@@ -1,7 +1,7 @@
 use academic_routine::cli::{Cli, Commands};
 use academic_routine::{
-    load_routine_file, render_day_table, render_today_card, render_weekly_overview, DayOfWeek,
-    RoutineState,
+    export_ics_file, load_routine_file, render_day_table, render_today_card,
+    render_weekly_overview, DayOfWeek, RoutineState,
 };
 use chrono::{Datelike, Local, Timelike};
 use clap::Parser;
@@ -224,6 +224,41 @@ fn main() {
                 }
                 if let Some(email) = contact.email {
                     println!("     ✉ Email: {email}");
+                }
+            }
+        }
+        Some(Commands::Export { ics, until }) => {
+            let end_date = if let Some(ref d_str) = until {
+                match chrono::NaiveDate::parse_from_str(d_str, "%Y-%m-%d") {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        eprintln!(
+                            "{} Invalid --until date format (expected YYYY-MM-DD): {e}",
+                            "❌".red()
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                state.semester_end_date
+            };
+
+            match export_ics_file(&schedule, &ics, end_date) {
+                Ok(()) => {
+                    println!(
+                        "{} Generated iCalendar feed at {}",
+                        "📅".green().bold(),
+                        ics.display().to_string().cyan().bold()
+                    );
+                    println!("   • Active classes exported: {}", schedule.entries.len());
+                    if let Some(until) = end_date {
+                        println!("   • Automatic expiry (UNTIL): {}", until);
+                    }
+                    println!("   • Alarms included: 15-minute sound & notification popups");
+                }
+                Err(e) => {
+                    eprintln!("{} Failed to write .ics file: {e}", "❌".red());
+                    std::process::exit(1);
                 }
             }
         }
