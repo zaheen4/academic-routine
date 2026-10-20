@@ -1,8 +1,8 @@
 //! Scheduled morning briefings and proactive notifications.
 
 use crate::bot::handlers::{escape_html, BotContext};
-use crate::model::day::DayOfWeek;
-use chrono::{Datelike, Local, NaiveTime};
+use crate::model::day::{academic_now, current_academic_day};
+use chrono::NaiveTime;
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
@@ -34,10 +34,7 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
         eprintln!("Pre-briefing Gist sync note: {e}");
     }
 
-    let today = match current_academic_day() {
-        Some(d) => d,
-        None => return,
-    };
+    let today = current_academic_day();
 
     let (sched, _) = match ctx.load_active_schedule() {
         Ok(res) => res,
@@ -85,7 +82,7 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
 }
 
 fn duration_until_next_6am() -> std::time::Duration {
-    let now = Local::now();
+    let now = academic_now();
     let target_time = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
 
     let target_dt = if now.time() < target_time {
@@ -98,17 +95,4 @@ fn duration_until_next_6am() -> std::time::Duration {
     let diff_seconds = (target_dt - now_naive).num_seconds().max(1) as u64;
 
     std::time::Duration::from_secs(diff_seconds)
-}
-
-fn current_academic_day() -> Option<DayOfWeek> {
-    let now = Local::now();
-    match now.weekday() {
-        chrono::Weekday::Sat => Some(DayOfWeek::Sat),
-        chrono::Weekday::Sun => Some(DayOfWeek::Sun),
-        chrono::Weekday::Mon => Some(DayOfWeek::Mon),
-        chrono::Weekday::Tue => Some(DayOfWeek::Tue),
-        chrono::Weekday::Wed => Some(DayOfWeek::Wed),
-        chrono::Weekday::Thu => Some(DayOfWeek::Thu),
-        chrono::Weekday::Fri => Some(DayOfWeek::Fri),
-    }
 }

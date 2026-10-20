@@ -2,10 +2,10 @@
 
 use crate::engine::parser::load_routine_file;
 use crate::exporters::ics::export_ics_file;
-use crate::model::day::DayOfWeek;
+use crate::model::day::{academic_now, current_academic_day, next_academic_day};
 use crate::model::schedule::Schedule;
 use crate::model::state::RoutineState;
-use chrono::{Datelike, Local, Timelike};
+use chrono::Timelike;
 use std::path::PathBuf;
 use std::sync::Arc;
 use teloxide::prelude::*;
@@ -161,7 +161,7 @@ pub async fn handle_command(
                 }
             };
 
-            let today = current_academic_day().unwrap_or(DayOfWeek::Sat);
+            let today = current_academic_day();
             let classes = sched.for_day(today);
 
             if classes.is_empty() {
@@ -212,8 +212,8 @@ pub async fn handle_command(
                 }
             };
 
-            let today = current_academic_day().unwrap_or(DayOfWeek::Sat);
-            let now = Local::now().time();
+            let today = current_academic_day();
+            let now = academic_now().time();
             let classes = sched.for_day(today);
 
             if let Some(active) = classes.iter().find(|c| c.time_slot.contains_time(now)) {
@@ -321,7 +321,7 @@ pub async fn handle_command(
                 }
             };
 
-            let today = current_academic_day().unwrap_or(DayOfWeek::Sat);
+            let today = current_academic_day();
             let classes = sched.for_day(today);
 
             if classes.len() < 2 {
@@ -620,32 +620,6 @@ pub async fn handle_command(
     }
 
     Ok(())
-}
-
-fn current_academic_day() -> Option<DayOfWeek> {
-    let now = Local::now();
-    match now.weekday() {
-        chrono::Weekday::Sat => Some(DayOfWeek::Sat),
-        chrono::Weekday::Sun => Some(DayOfWeek::Sun),
-        chrono::Weekday::Mon => Some(DayOfWeek::Mon),
-        chrono::Weekday::Tue => Some(DayOfWeek::Tue),
-        chrono::Weekday::Wed => Some(DayOfWeek::Wed),
-        chrono::Weekday::Thu => Some(DayOfWeek::Thu),
-        chrono::Weekday::Fri => Some(DayOfWeek::Fri),
-    }
-}
-
-fn next_academic_day() -> DayOfWeek {
-    let now = Local::now();
-    match now.weekday() {
-        chrono::Weekday::Fri => DayOfWeek::Sat,
-        chrono::Weekday::Sat => DayOfWeek::Sun,
-        chrono::Weekday::Sun => DayOfWeek::Mon,
-        chrono::Weekday::Mon => DayOfWeek::Tue,
-        chrono::Weekday::Tue => DayOfWeek::Wed,
-        chrono::Weekday::Wed => DayOfWeek::Thu,
-        chrono::Weekday::Thu => DayOfWeek::Fri,
-    }
 }
 
 /// Escapes HTML special characters for Telegram HTML mode.

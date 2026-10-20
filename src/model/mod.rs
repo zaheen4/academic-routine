@@ -7,7 +7,7 @@ pub mod state;
 pub mod time_slot;
 
 pub use course::{CourseEntry, TeacherContact};
-pub use day::{DayOfWeek, ParseDayError};
+pub use day::{academic_now, current_academic_day, next_academic_day, DayOfWeek, ParseDayError};
 pub use schedule::{Schedule, ScheduleConflict};
 pub use state::{RoutineState, StateError};
 pub use time_slot::{TimeSlot, TimeSlotError};

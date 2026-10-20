@@ -112,6 +112,56 @@ impl fmt::Display for DayOfWeek {
     }
 }
 
+/// Returns the current date and time in the academic timezone (UTC+6, Asia/Dhaka by default).
+///
+/// If `ROUTINE_TIMEZONE_OFFSET` is set (e.g. `6`), it uses that hourly offset from UTC.
+/// Defaults to `+06:00` (Dhaka Standard Time), which ensures cloud servers running in UTC
+/// evaluate the academic calendar identically to local university time.
+#[must_use]
+pub fn academic_now() -> chrono::DateTime<chrono::FixedOffset> {
+    let offset_seconds = std::env::var("ROUTINE_TIMEZONE_OFFSET")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .map(|hours| hours * 3600)
+        .unwrap_or(6 * 3600);
+
+    let offset = chrono::FixedOffset::east_opt(offset_seconds)
+        .or_else(|| chrono::FixedOffset::west_opt(-offset_seconds))
+        .unwrap_or_else(|| chrono::FixedOffset::east_opt(6 * 3600).unwrap());
+
+    chrono::Utc::now().with_timezone(&offset)
+}
+
+/// Returns the current academic day of the week according to the university timezone.
+#[must_use]
+pub fn current_academic_day() -> DayOfWeek {
+    use chrono::Datelike;
+    match academic_now().weekday() {
+        chrono::Weekday::Sat => DayOfWeek::Sat,
+        chrono::Weekday::Sun => DayOfWeek::Sun,
+        chrono::Weekday::Mon => DayOfWeek::Mon,
+        chrono::Weekday::Tue => DayOfWeek::Tue,
+        chrono::Weekday::Wed => DayOfWeek::Wed,
+        chrono::Weekday::Thu => DayOfWeek::Thu,
+        chrono::Weekday::Fri => DayOfWeek::Fri,
+    }
+}
+
+/// Returns the next academic day of the week (tomorrow) according to the university timezone.
+#[must_use]
+pub fn next_academic_day() -> DayOfWeek {
+    use chrono::Datelike;
+    match academic_now().weekday() {
+        chrono::Weekday::Fri => DayOfWeek::Sat,
+        chrono::Weekday::Sat => DayOfWeek::Sun,
+        chrono::Weekday::Sun => DayOfWeek::Mon,
+        chrono::Weekday::Mon => DayOfWeek::Tue,
+        chrono::Weekday::Tue => DayOfWeek::Wed,
+        chrono::Weekday::Wed => DayOfWeek::Thu,
+        chrono::Weekday::Thu => DayOfWeek::Fri,
+    }
+}
+
 /// Error returned when parsing an unrecognized day name.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("Unrecognized day of week '{0}'. Expected Sat, Sun, Mon, Tue, Wed, Thu, or Fri.")]

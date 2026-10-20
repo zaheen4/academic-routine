@@ -26,6 +26,6 @@ pub use exporters::{
     render_weekly_overview, sync_gist_bundle, sync_gist_file,
 };
 pub use model::{
-    CourseEntry, DayOfWeek, ParseDayError, RoutineState, Schedule, ScheduleConflict, StateError,
-    TeacherContact, TimeSlot, TimeSlotError,
+    academic_now, current_academic_day, next_academic_day, CourseEntry, DayOfWeek, ParseDayError,
+    RoutineState, Schedule, ScheduleConflict, StateError, TeacherContact, TimeSlot, TimeSlotError,
 };

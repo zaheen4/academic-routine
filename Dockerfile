@@ -18,14 +18,19 @@ RUN cargo build --release
 # Production runtime image with headless browser & virtual display capabilities
 FROM debian:bookworm-slim
 
+ENV TZ=Asia/Dhaka
+ENV ROUTINE_TIMEZONE_OFFSET=6
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    tzdata \
     chromium \
     xvfb \
     xauth \
     python3 \
     python3-pip \
     python3-venv \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

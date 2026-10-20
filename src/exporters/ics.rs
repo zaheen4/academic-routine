@@ -11,7 +11,7 @@
 
 use crate::model::day::DayOfWeek;
 use crate::model::schedule::Schedule;
-use chrono::{Datelike, Local, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -23,7 +23,7 @@ use std::path::Path;
 #[must_use]
 pub fn generate_ics(schedule: &Schedule, semester_end_date: Option<NaiveDate>) -> String {
     let now_utc = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let today = Local::now().date_naive();
+    let today = crate::model::day::academic_now().date_naive();
 
     let mut ics = String::new();
     ics.push_str("BEGIN:VCALENDAR\r\n");

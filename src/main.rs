@@ -1,9 +1,9 @@
 use academic_routine::cli::{Cli, Commands};
 use academic_routine::{
-    export_ics_file, load_routine_file, render_day_table, render_today_card,
-    render_weekly_overview, DayOfWeek, RoutineState,
+    academic_now, current_academic_day, export_ics_file, load_routine_file, render_day_table,
+    render_today_card, render_weekly_overview, DayOfWeek, RoutineState,
 };
-use chrono::{Datelike, Local, Timelike};
+use chrono::Timelike;
 use clap::Parser;
 use colored::Colorize;
 use std::path::PathBuf;
@@ -38,19 +38,6 @@ fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
 
 fn state_path() -> PathBuf {
     PathBuf::from("routine_state.json")
-}
-
-fn current_day_of_week() -> Option<DayOfWeek> {
-    let now = Local::now();
-    match now.weekday() {
-        chrono::Weekday::Sat => Some(DayOfWeek::Sat),
-        chrono::Weekday::Sun => Some(DayOfWeek::Sun),
-        chrono::Weekday::Mon => Some(DayOfWeek::Mon),
-        chrono::Weekday::Tue => Some(DayOfWeek::Tue),
-        chrono::Weekday::Wed => Some(DayOfWeek::Wed),
-        chrono::Weekday::Thu => Some(DayOfWeek::Thu),
-        chrono::Weekday::Fri => Some(DayOfWeek::Fri),
-    }
 }
 
 #[tokio::main]
@@ -257,13 +244,13 @@ async fn main() {
             }
         }
         Some(Commands::Today) => {
-            let today = current_day_of_week().unwrap_or(DayOfWeek::Sat);
-            let now = Local::now().time();
+            let today = current_academic_day();
+            let now = academic_now().time();
             print!("{}", render_today_card(&schedule, today, now));
         }
         Some(Commands::Next) => {
-            let today = current_day_of_week().unwrap_or(DayOfWeek::Sat);
-            let now = Local::now().time();
+            let today = current_academic_day();
+            let now = academic_now().time();
             let classes = schedule.for_day(today);
 
             if let Some(active) = classes.iter().find(|c| c.time_slot.contains_time(now)) {
