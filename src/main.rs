@@ -16,16 +16,21 @@ fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
         }
     }
 
-    let default_scraper_path = PathBuf::from(
-        "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
-    );
-    if default_scraper_path.exists() {
-        return Some(default_scraper_path);
+    let local_data = PathBuf::from("routine_data.json");
+    if local_data.exists() {
+        return Some(local_data);
     }
 
     let local_path = PathBuf::from("final_combined_routine.json");
     if local_path.exists() {
         return Some(local_path);
+    }
+
+    let default_scraper_path = PathBuf::from(
+        "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
+    );
+    if default_scraper_path.exists() {
+        return Some(default_scraper_path);
     }
 
     None
@@ -128,6 +133,54 @@ async fn main() {
                     .yellow()
                     .bold()
                 );
+            }
+            return;
+        }
+        Some(Commands::SyncUcam { force: _ }) => {
+            println!(
+                "🌐 {}",
+                "Connecting to UCAM portal & extracting live routine..."
+                    .cyan()
+                    .bold()
+            );
+            let target_json = cli
+                .file
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("routine_data.json"));
+
+            match academic_routine::run_ucam_scraper(&target_json) {
+                Ok(path) => {
+                    println!(
+                        "{} Successfully extracted routine from UCAM!",
+                        "✅".green().bold()
+                    );
+                    println!("   • Saved to: {}", path.display().to_string().cyan());
+
+                    if let Ok(raw_sched) = load_routine_file(&path) {
+                        println!("   • Total classes extracted: {}", raw_sched.entries.len());
+                        println!("   • Semester: {}", raw_sched.semester_name.yellow().bold());
+
+                        let ics_path = PathBuf::from("routine.ics");
+                        let _ = export_ics_file(&raw_sched, &ics_path, state.semester_end_date);
+
+                        if let Some(ref gid) = state.gist_id {
+                            println!("🔄 Syncing updated routine to GitHub Gist...");
+                            match academic_routine::sync_gist_file(gid, &ics_path).await {
+                                Ok(url) => {
+                                    println!("🚀 Live feed updated: {}", url.yellow().bold())
+                                }
+                                Err(e) => eprintln!("⚠️ Gist sync notice: {e}"),
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to extract routine from UCAM: {e}",
+                        "❌".red().bold()
+                    );
+                    std::process::exit(1);
+                }
             }
             return;
         }

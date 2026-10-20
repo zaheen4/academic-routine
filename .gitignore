@@ -10,6 +10,8 @@
 output_of_fetched_routine/
 tmp/
 *.ics
+routine_data.json
+routine_data.json.tmp
 
 # OS & Editor metadata
 .DS_Store

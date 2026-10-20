@@ -52,6 +52,9 @@ pub enum Command {
     /// Send .ics calendar file for 1-tap phone importing
     #[command(description = "Send routine.ics file directly to chat for 1-tap calendar import")]
     Calendar,
+    /// Refresh routine directly from UCAM portal and sync calendar
+    #[command(description = "Refresh routine directly from UCAM portal and update calendar")]
+    Sync,
 }
 
 /// Shared runtime context for the Telegram bot.
@@ -503,6 +506,58 @@ pub async fn handle_command(
                 .parse_mode(ParseMode::Html)
                 .await?;
         }
+
+        Command::Sync => {
+            bot.send_message(
+                chat_id,
+                "🔄 <b>Connecting to UCAM portal...</b>\nPulling the latest class routine, teacher contacts, and room assignments. This takes ~35 seconds.",
+            )
+            .parse_mode(ParseMode::Html)
+            .await?;
+
+            let routine_target = ctx.routine_path.clone();
+            let scrape_res = tokio::task::spawn_blocking(move || {
+                crate::engine::scraper::run_ucam_scraper(&routine_target)
+            })
+            .await;
+
+            match scrape_res {
+                Ok(Ok(_path)) => {
+                    let sync_msg = match ctx.regenerate_and_sync().await {
+                        Ok(url) => format!(
+                            "\n🔄 <i>Calendar feed updated:</i>\n<code>{}</code>",
+                            escape_html(&url)
+                        ),
+                        Err(e) => format!("\n⚠️ <i>Gist sync notice: {}</i>", escape_html(&e)),
+                    };
+
+                    let resp = format!(
+                        "✅ <b>UCAM Routine Successfully Synchronized!</b>\n\
+                         All class times, room numbers, and instructor contacts are up to date.{}\n\n\
+                         <i>Send /today or /calendar to view your updated routine.</i>",
+                        sync_msg
+                    );
+                    bot.send_message(chat_id, resp)
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                }
+                Ok(Err(e)) => {
+                    bot.send_message(
+                        chat_id,
+                        format!(
+                            "❌ <b>UCAM Sync Failed:</b>\n<code>{}</code>",
+                            escape_html(&e.to_string())
+                        ),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+                Err(e) => {
+                    bot.send_message(chat_id, format!("❌ <b>Internal task error:</b>\n{e}"))
+                        .await?;
+                }
+            }
+        }
     }
 
     Ok(())
@@ -568,6 +623,7 @@ mod tests {
         assert_eq!(Command::parse("/teachers", "").unwrap(), Command::Teachers);
         assert_eq!(Command::parse("/dropped", "").unwrap(), Command::Dropped);
         assert_eq!(Command::parse("/calendar", "").unwrap(), Command::Calendar);
+        assert_eq!(Command::parse("/sync", "").unwrap(), Command::Sync);
         assert_eq!(
             Command::parse("/drop CSE-4125", "").unwrap(),
             Command::Drop("CSE-4125".to_string())

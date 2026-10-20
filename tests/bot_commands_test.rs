@@ -17,6 +17,7 @@ fn test_all_bot_commands_syntax_parsing() {
     assert_eq!(Command::parse("/teachers", "").unwrap(), Command::Teachers);
     assert_eq!(Command::parse("/dropped", "").unwrap(), Command::Dropped);
     assert_eq!(Command::parse("/calendar", "").unwrap(), Command::Calendar);
+    assert_eq!(Command::parse("/sync", "").unwrap(), Command::Sync);
 
     // 2. Commands with arguments
     assert_eq!(

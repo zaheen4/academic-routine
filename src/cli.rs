@@ -89,4 +89,11 @@ pub enum Commands {
 
     /// Display teacher directory with phone numbers and emails
     Teachers,
+
+    /// Scrape the latest routine directly from UCAM portal, update calendar, and sync Gist
+    SyncUcam {
+        /// Force re-scrape even if routine data is fresh
+        #[arg(long)]
+        force: bool,
+    },
 }
