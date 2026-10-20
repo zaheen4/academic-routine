@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+
+# Sensitive credentials & environment keys (Never commit secrets!)
+.env
+*.token
+*credentials*.json
+
+# Data, temporary files & export caches
+output_of_fetched_routine/
+tmp/
+*.ics
+
+# OS & Editor metadata
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
