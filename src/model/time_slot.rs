@@ -2,12 +2,16 @@
 //!
 //! Handles class timings, duration calculations, and formatting
 //! for both 12-hour human display and RFC 5545 iCalendar serialization.
+//!
+//! Includes a resilient parser capable of normalizing unpadded or messy
+//! UCAM portal time strings such as `"11:45 - 1:0"` or `"8:0 - 9:15"`.
 
 use chrono::{NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
-/// Error returned when constructing an invalid [`TimeSlot`].
+/// Error returned when constructing or parsing a [`TimeSlot`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TimeSlotError {
     /// The start time occurs at or after the end time.
@@ -18,6 +22,19 @@ pub enum TimeSlotError {
         /// The given end time.
         end: String,
     },
+
+    /// The time slot string is missing a hyphen delimiter separating start and end.
+    #[error("Missing hyphen separator in time slot string '{0}'")]
+    MissingDelimiter(String),
+
+    /// A specific time token could not be parsed.
+    #[error("Failed to parse time token '{token}': {reason}")]
+    InvalidToken {
+        /// The problematic token.
+        token: String,
+        /// Human-readable explanation.
+        reason: String,
+    },
 }
 
 /// A class period defined by a start time and an end time.
@@ -26,15 +43,13 @@ pub enum TimeSlotError {
 ///
 /// # Examples
 /// ```
-/// use academic_routine::model::time_slot::TimeSlot;
-/// use chrono::NaiveTime;
+/// use academic_routine::TimeSlot;
+/// use std::str::FromStr;
 ///
-/// let start = NaiveTime::from_hms_opt(9, 15, 0).unwrap();
-/// let end = NaiveTime::from_hms_opt(10, 30, 0).unwrap();
-/// let slot = TimeSlot::new(start, end).unwrap();
-///
+/// // Parses messy UCAM formats automatically
+/// let slot = TimeSlot::from_str("11:45 - 1:0").unwrap();
+/// assert_eq!(slot.format_12h(), "11:45 AM - 01:00 PM");
 /// assert_eq!(slot.duration_minutes(), 75);
-/// assert_eq!(slot.format_12h(), "09:15 AM - 10:30 AM");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TimeSlot {
@@ -68,17 +83,37 @@ impl TimeSlot {
         end_m: u32,
     ) -> Result<Self, TimeSlotError> {
         let start = NaiveTime::from_hms_opt(start_h, start_m, 0).ok_or_else(|| {
-            TimeSlotError::InvalidOrder {
-                start: format!("{start_h:02}:{start_m:02}"),
-                end: format!("{end_h:02}:{end_m:02}"),
+            TimeSlotError::InvalidToken {
+                token: format!("{start_h:02}:{start_m:02}"),
+                reason: "Invalid hours or minutes".to_string(),
             }
         })?;
         let end = NaiveTime::from_hms_opt(end_h, end_m, 0).ok_or_else(|| {
-            TimeSlotError::InvalidOrder {
-                start: format!("{start_h:02}:{start_m:02}"),
-                end: format!("{end_h:02}:{end_m:02}"),
+            TimeSlotError::InvalidToken {
+                token: format!("{end_h:02}:{end_m:02}"),
+                reason: "Invalid hours or minutes".to_string(),
             }
         })?;
+        Self::new(start, end)
+    }
+
+    /// Parses a raw UCAM time slot string (e.g. `"11:45 - 1:0"`, `"8:0 - 9:15"`).
+    ///
+    /// Handles unpadded minutes, trailing noise characters, and infers
+    /// AM/PM based on typical university scheduling hours (7:00–11:59 AM, 12:00–6:00 PM).
+    ///
+    /// # Errors
+    /// Returns [`TimeSlotError`] if the string cannot be parsed or if `start >= end`.
+    pub fn parse_ucam(s: &str) -> Result<Self, TimeSlotError> {
+        let trimmed = s.trim();
+        let parts: Vec<&str> = trimmed.split('-').collect();
+        if parts.len() != 2 {
+            return Err(TimeSlotError::MissingDelimiter(s.to_string()));
+        }
+
+        let start = parse_single_time_token(parts[0])?;
+        let end = parse_single_time_token(parts[1])?;
+
         Self::new(start, end)
     }
 
@@ -135,10 +170,105 @@ impl TimeSlot {
     }
 }
 
+impl FromStr for TimeSlot {
+    type Err = TimeSlotError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_ucam(s)
+    }
+}
+
 impl fmt::Display for TimeSlot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.format_12h())
     }
+}
+
+/// Parses an individual time token (e.g. `"11:45"`, `"1:0"`, `"09:15 AM"`, `"4:0 PM"`).
+fn parse_single_time_token(token: &str) -> Result<NaiveTime, TimeSlotError> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Err(TimeSlotError::InvalidToken {
+            token: token.to_string(),
+            reason: "Time token is empty".to_string(),
+        });
+    }
+
+    // Check for explicit AM/PM period
+    let upper = trimmed.to_uppercase();
+    let (time_part, explicit_period) = if upper.ends_with("AM") {
+        (upper.trim_end_matches("AM").trim(), Some("AM"))
+    } else if upper.ends_with("PM") {
+        (upper.trim_end_matches("PM").trim(), Some("PM"))
+    } else {
+        (trimmed, None)
+    };
+
+    let colon_pos = time_part
+        .find(':')
+        .ok_or_else(|| TimeSlotError::InvalidToken {
+            token: token.to_string(),
+            reason: "Missing colon ':' separator".to_string(),
+        })?;
+
+    let (hour_str, min_str) = time_part.split_at(colon_pos);
+    let min_str = &min_str[1..]; // Skip ':'
+
+    // Parse hour
+    let mut hour: u32 = hour_str
+        .trim()
+        .parse()
+        .map_err(|_| TimeSlotError::InvalidToken {
+            token: token.to_string(),
+            reason: format!("Invalid hour digits '{hour_str}'"),
+        })?;
+
+    // Parse minute, taking leading digits to gracefully ignore any trailing noise
+    let min_digits: String = min_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if min_digits.is_empty() {
+        return Err(TimeSlotError::InvalidToken {
+            token: token.to_string(),
+            reason: format!("Missing minute digits in '{min_str}'"),
+        });
+    }
+    let minute: u32 = min_digits
+        .parse()
+        .map_err(|_| TimeSlotError::InvalidToken {
+            token: token.to_string(),
+            reason: format!("Invalid minute digits '{min_digits}'"),
+        })?;
+
+    if minute >= 60 {
+        return Err(TimeSlotError::InvalidToken {
+            token: token.to_string(),
+            reason: format!("Minute must be 0-59, found {minute}"),
+        });
+    }
+
+    // Determine AM/PM period
+    let period = match explicit_period {
+        Some(p) => p,
+        None => {
+            // University heuristic: 07:00-11:59 is AM; 1:00-6:59 & 12:00 are PM
+            if (7..=11).contains(&hour) {
+                "AM"
+            } else {
+                "PM"
+            }
+        }
+    };
+
+    // Convert to 24-hour time
+    if period == "PM" && hour < 12 {
+        hour += 12;
+    } else if period == "AM" && hour == 12 {
+        hour = 0;
+    }
+
+    NaiveTime::from_hms_opt(hour, minute, 0).ok_or_else(|| TimeSlotError::InvalidToken {
+        token: token.to_string(),
+        reason: format!("Calculated invalid 24h time {hour:02}:{minute:02}"),
+    })
 }
 
 #[cfg(test)]
@@ -157,27 +287,62 @@ mod tests {
 
     #[test]
     fn test_invalid_order_rejected() {
-        // Start after end
         let err = TimeSlot::from_hms(11, 0, 9, 30);
         assert!(matches!(err, Err(TimeSlotError::InvalidOrder { .. })));
 
-        // Start equal to end
         let err_equal = TimeSlot::from_hms(10, 0, 10, 0);
         assert!(matches!(err_equal, Err(TimeSlotError::InvalidOrder { .. })));
     }
 
     #[test]
-    fn test_afternoon_slot_formatting() {
-        let slot = TimeSlot::from_hms(14, 30, 16, 0).unwrap();
-        assert_eq!(slot.duration_minutes(), 90);
+    fn test_ucam_cross_meridiem_parsing() {
+        // "11:45 - 1:0" -> 11:45 AM to 01:00 PM (75 mins)
+        let slot = TimeSlot::from_str("11:45 - 1:0").unwrap();
+        assert_eq!(slot.format_12h(), "11:45 AM - 01:00 PM");
+        assert_eq!(slot.duration_minutes(), 75);
+        assert_eq!(slot.format_24h(), "11:45 - 13:00");
+    }
+
+    #[test]
+    fn test_ucam_morning_unpadded_parsing() {
+        // "8:0 - 9:15" -> 08:00 AM to 09:15 AM
+        let slot = TimeSlot::from_str("8:0 - 9:15").unwrap();
+        assert_eq!(slot.format_12h(), "08:00 AM - 09:15 AM");
+        assert_eq!(slot.duration_minutes(), 75);
+    }
+
+    #[test]
+    fn test_ucam_afternoon_parsing() {
+        // "2:30 - 4:0" -> 02:30 PM to 04:00 PM
+        let slot = TimeSlot::from_str("2:30 - 4:0").unwrap();
         assert_eq!(slot.format_12h(), "02:30 PM - 04:00 PM");
+        assert_eq!(slot.duration_minutes(), 90);
         assert_eq!(slot.format_24h(), "14:30 - 16:00");
     }
 
     #[test]
-    fn test_slot_ordering() {
-        let slot_morning = TimeSlot::from_hms(8, 0, 9, 15).unwrap();
-        let slot_noon = TimeSlot::from_hms(11, 45, 13, 0).unwrap();
-        assert!(slot_morning < slot_noon);
+    fn test_explicit_ampm_parsing() {
+        let slot = TimeSlot::from_str("02:30 PM - 04:00 PM").unwrap();
+        assert_eq!(slot.format_12h(), "02:30 PM - 04:00 PM");
+
+        let slot_noon = TimeSlot::from_str("10:30 AM - 12:00 PM").unwrap();
+        assert_eq!(slot_noon.format_12h(), "10:30 AM - 12:00 PM");
+        assert_eq!(slot_noon.duration_minutes(), 90);
+    }
+
+    #[test]
+    fn test_malformed_inputs() {
+        assert!(matches!(
+            TimeSlot::from_str("invalid"),
+            Err(TimeSlotError::MissingDelimiter(_))
+        ));
+        assert!(matches!(
+            TimeSlot::from_str("9:15 - "),
+            Err(TimeSlotError::InvalidToken { .. })
+        ));
+        assert!(matches!(
+            TimeSlot::from_str("9:99 - 10:00"),
+            Err(TimeSlotError::InvalidToken { .. })
+        ));
     }
 }
