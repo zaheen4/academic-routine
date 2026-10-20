@@ -9,8 +9,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod engine;
 pub mod model;
 
+pub use engine::{load_routine_file, parse_routine_json, IngestError};
 pub use model::{
     CourseEntry, DayOfWeek, ParseDayError, RoutineState, Schedule, ScheduleConflict, StateError,
     TeacherContact, TimeSlot, TimeSlotError,
