@@ -20,6 +20,7 @@ pub use cli::{Cli, Commands};
 pub use engine::{load_routine_file, parse_routine_json, IngestError};
 pub use exporters::{
     export_ics_file, generate_ics, render_day_table, render_today_card, render_weekly_overview,
+    sync_gist_file,
 };
 pub use model::{
     CourseEntry, DayOfWeek, ParseDayError, RoutineState, Schedule, ScheduleConflict, StateError,

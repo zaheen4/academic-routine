@@ -81,7 +81,7 @@ impl BotContext {
     }
 
     /// Regenerates routine.ics and syncs to GitHub Gist if configured.
-    pub fn regenerate_and_sync(&self) -> Result<String, String> {
+    pub async fn regenerate_and_sync(&self) -> Result<String, String> {
         let (sched, state) = self.load_active_schedule()?;
         let ics_path = PathBuf::from("routine.ics");
 
@@ -89,17 +89,7 @@ impl BotContext {
             .map_err(|e| format!("Failed to export .ics: {e}"))?;
 
         if let Some(ref gid) = state.gist_id {
-            let output = std::process::Command::new("gh")
-                .args(["gist", "edit", gid, "routine.ics"])
-                .output();
-
-            if let Ok(out) = output {
-                if out.status.success() {
-                    return Ok(format!(
-                        "https://gist.githubusercontent.com/raw/{gid}/routine.ics"
-                    ));
-                }
-            }
+            return crate::exporters::gist::sync_gist_file(gid, &ics_path).await;
         }
 
         Ok("routine.ics".to_string())
@@ -408,7 +398,7 @@ pub async fn handle_command(
             let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
             if state.drop_course(&clean_code) {
                 let _ = state.save(&ctx.state_path);
-                let sync_msg = match ctx.regenerate_and_sync() {
+                let sync_msg = match ctx.regenerate_and_sync().await {
                     Ok(url) => format!(
                         "\n🔄 <i>Calendar feed updated:</i>\n<code>{}</code>",
                         escape_html(&url)
@@ -447,7 +437,7 @@ pub async fn handle_command(
             let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
             if state.restore_course(&clean_code) {
                 let _ = state.save(&ctx.state_path);
-                let sync_msg = match ctx.regenerate_and_sync() {
+                let sync_msg = match ctx.regenerate_and_sync().await {
                     Ok(url) => format!(
                         "\n🔄 <i>Calendar feed updated:</i>\n<code>{}</code>",
                         escape_html(&url)

@@ -6,7 +6,7 @@ use academic_routine::{
 use chrono::{Datelike, Local, Timelike};
 use clap::Parser;
 use colored::Colorize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
@@ -33,27 +33,6 @@ fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
 
 fn state_path() -> PathBuf {
     PathBuf::from("routine_state.json")
-}
-
-fn sync_to_gist(gist_id: &str, ics_path: &Path) -> Result<String, String> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "gist",
-            "edit",
-            gist_id,
-            ics_path.to_str().unwrap_or("routine.ics"),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to execute 'gh' command: {e}"))?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh gist edit failed: {err}"));
-    }
-
-    Ok(format!(
-        "https://gist.githubusercontent.com/raw/{gist_id}/routine.ics"
-    ))
 }
 
 fn current_day_of_week() -> Option<DayOfWeek> {
@@ -309,7 +288,7 @@ async fn main() {
                     if sync_gist || state.gist_id.is_some() {
                         if let Some(ref gid) = state.gist_id {
                             println!("{} Syncing to GitHub Gist...", "🔄".cyan());
-                            match sync_to_gist(gid, &ics) {
+                            match academic_routine::sync_gist_file(gid, &ics).await {
                                 Ok(url) => {
                                     println!(
                                         "{} Live subscription feed updated!",
@@ -350,7 +329,7 @@ async fn main() {
             }
 
             println!("{} Syncing routine.ics to GitHub Gist...", "🔄".cyan());
-            match sync_to_gist(gid, &ics_path) {
+            match academic_routine::sync_gist_file(gid, &ics_path).await {
                 Ok(url) => {
                     println!("{} Live subscription feed updated!", "🚀".green().bold());
                     println!("   Google Calendar Feed: {}", url.yellow().bold());
