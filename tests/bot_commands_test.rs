@@ -7,6 +7,20 @@ use teloxide::utils::command::BotCommands;
 
 #[test]
 fn test_all_bot_commands_syntax_parsing() {
+    // Verify each registered bot command description is clean (single-line, non-empty, no duplication)
+    for cmd in Command::bot_commands() {
+        assert!(
+            !cmd.description.contains('\n'),
+            "Command description for {} must not contain newlines or duplicate text",
+            cmd.command
+        );
+        assert!(
+            !cmd.description.trim().is_empty(),
+            "Command description for {} must not be empty",
+            cmd.command
+        );
+    }
+
     // 1. Core navigation commands
     assert_eq!(Command::parse("/start", "").unwrap(), Command::Start);
     assert_eq!(Command::parse("/help", "").unwrap(), Command::Help);

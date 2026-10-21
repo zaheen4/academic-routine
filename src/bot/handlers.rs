@@ -12,78 +12,59 @@ use teloxide::prelude::*;
 use teloxide::types::{InputFile, ParseMode};
 use teloxide::utils::command::BotCommands;
 
-/// Available Telegram bot commands.
+/// 🎓 University Routine Assistant Commands:
 #[derive(BotCommands, Clone, Debug, PartialEq, Eq)]
-#[command(
-    rename_rule = "lowercase",
-    description = "🎓 University Routine Assistant Commands:"
-)]
+#[command(rename_rule = "lowercase")]
 pub enum Command {
-    /// Display help and available commands
-    #[command(description = "Show help and command instructions")]
+    /// Show help and command instructions
     Help,
-    /// Welcome message
-    #[command(description = "Start the assistant")]
+    /// Start the routine assistant and show overview
     Start,
-    /// View today's schedule
-    #[command(description = "Show today's schedule and active session")]
+    /// View today's schedule and active session
     Today,
-    /// Show upcoming class with countdown
-    #[command(description = "Show upcoming or in-session class with countdown")]
+    /// Show upcoming or in-session class with countdown
     Next,
-    /// Preview tomorrow's schedule
-    #[command(description = "Preview tomorrow's schedule")]
+    /// Preview tomorrow's class schedule
     Tomorrow,
-    /// Calculate free break periods today
-    #[command(description = "Show break and study windows for today")]
+    /// Show break and study windows for today
     Free,
-    /// Instructor contact directory
-    #[command(description = "List instructors with phone numbers and emails")]
+    /// List instructor directory with phone numbers and emails
     Teachers,
-    /// View complete weekly routine schedule
-    #[command(description = "Show full weekly routine timetable")]
+    /// View complete weekly routine timetable
     Routine,
-    /// Display subsystem health card and alert settings
-    #[command(description = "Show routine status, active alerts, vacation mode, and synced feeds")]
+    /// Show routine status, alert settings, and vacation mode
     Status,
-    /// Complete a course whose syllabus is finished (e.g. /complete CSE-4125)
-    #[command(description = "Mark a course whose syllabus is done as completed")]
+    /// Mark a completed course to stop alerts (e.g. /complete CSE-4125)
     Complete(String),
     /// List all courses marked as completed for the semester
-    #[command(description = "List all courses marked as completed")]
     Completed,
-    /// Resume an active schedule for a completed course (e.g. /resume CSE-4125)
-    #[command(description = "Resume an active schedule for a completed course")]
+    /// Resume routine for a completed course (e.g. /resume CSE-4125)
     Resume(String),
-    /// Toggle 6:00 AM morning briefings (/alerts on, /alerts off, /alerts status)
-    #[command(description = "Toggle 6:00 AM daily briefing notifications (on/off/status)")]
+    /// Configure 6:00 AM daily briefing notifications (on/off/status)
     Alerts(String),
-    /// Manage vacation / semester break mode (/vacation on, /vacation off, /vacation until YYYY-MM-DD)
-    #[command(description = "Manage vacation / semester break mode (on/off/until)")]
+    /// Manage vacation / semester break mode (on/off/until)
     Vacation(String),
-    /// Send .ics calendar file for 1-tap phone importing
-    #[command(description = "Send routine.ics file directly to chat for 1-tap calendar import")]
+    /// Send .ics calendar file directly to chat for 1-tap phone import
     Calendar,
-    /// Refresh routine directly from UCAM portal and sync calendar
-    #[command(description = "Refresh routine directly from UCAM portal and update calendar")]
+    /// Refresh routine directly from UCAM portal and update calendar
     Sync,
     /// Alias for /routine
-    #[command(description = "Alias for /routine")]
+    #[command(hide)]
     Week,
     /// Alias for /complete (e.g. /finish CSE-4125)
-    #[command(description = "Alias for /complete")]
+    #[command(hide)]
     Finish(String),
     /// Alias for /completed
-    #[command(description = "Alias for /completed")]
+    #[command(hide)]
     Finished,
     /// Alias for /complete (e.g. /drop CSE-4101)
-    #[command(description = "Alias for /complete")]
+    #[command(hide)]
     Drop(String),
     /// Alias for /resume (e.g. /restore CSE-4101)
-    #[command(description = "Alias for /resume")]
+    #[command(hide)]
     Restore(String),
     /// Alias for /completed
-    #[command(description = "Alias for /completed")]
+    #[command(hide)]
     Dropped,
 }
 
