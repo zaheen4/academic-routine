@@ -16,9 +16,19 @@ fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
         }
     }
 
+    let output_data = PathBuf::from("output/routine_data.json");
+    if output_data.exists() {
+        return Some(output_data);
+    }
+
     let local_data = PathBuf::from("routine_data.json");
     if local_data.exists() {
         return Some(local_data);
+    }
+
+    let output_final = PathBuf::from("output/final_combined_routine.json");
+    if output_final.exists() {
+        return Some(output_final);
     }
 
     let local_path = PathBuf::from("final_combined_routine.json");
@@ -37,7 +47,31 @@ fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
 }
 
 fn state_path() -> PathBuf {
-    PathBuf::from("routine_state.json")
+    let output_state = PathBuf::from("output/routine_state.json");
+    if output_state.exists() {
+        return output_state;
+    }
+
+    let local_state = PathBuf::from("routine_state.json");
+    if local_state.exists() {
+        return local_state;
+    }
+
+    output_state
+}
+
+fn resolve_ics_path() -> PathBuf {
+    let output_ics = PathBuf::from("output/routine.ics");
+    if output_ics.exists() {
+        return output_ics;
+    }
+
+    let local_ics = PathBuf::from("routine.ics");
+    if local_ics.exists() {
+        return local_ics;
+    }
+
+    output_ics
 }
 
 #[tokio::main]
@@ -164,7 +198,7 @@ async fn main() {
             println!("\n--- Subsystems & Integrations ---");
             println!("🖥️  Offline CLI       : {}", "READY".green().bold());
 
-            let ics_path = PathBuf::from("routine.ics");
+            let ics_path = resolve_ics_path();
             if ics_path.exists() {
                 println!("📅 Calendar (.ics)    : {} ({})", "GENERATED".green().bold(), ics_path.display().to_string().cyan());
             } else {
@@ -408,7 +442,7 @@ async fn main() {
             let target_json = cli
                 .file
                 .clone()
-                .unwrap_or_else(|| PathBuf::from("routine_data.json"));
+                .unwrap_or_else(|| PathBuf::from("output/routine_data.json"));
 
             match academic_routine::run_ucam_scraper_opts(&target_json, *headed) {
                 Ok(path) => {
@@ -424,7 +458,7 @@ async fn main() {
 
                         // CRITICAL FIX: Filter completed courses before exporting routine.ics!
                         let active_sched = raw_sched.filter_active(&state.dropped_courses);
-                        let ics_path = PathBuf::from("routine.ics");
+                        let ics_path = resolve_ics_path();
                         let _ = export_ics_file(&active_sched, &ics_path, state.semester_end_date);
                         println!("   • Exported active calendar to: {}", ics_path.display().to_string().cyan());
 
@@ -501,7 +535,7 @@ async fn main() {
             let target_json = file
                 .clone()
                 .or_else(|| resolve_routine_path(cli.file.as_ref()))
-                .unwrap_or_else(|| PathBuf::from("routine_data.json"));
+                .unwrap_or_else(|| PathBuf::from("output/routine_data.json"));
 
             let sheet_name = std::env::var("SPREADSHEET_NAME")
                 .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
@@ -529,7 +563,7 @@ async fn main() {
         }
         Some(Commands::Bot { no_http }) => {
             let routine_path = resolve_routine_path(cli.file.as_ref())
-                .unwrap_or_else(|| PathBuf::from("routine_data.json"));
+                .unwrap_or_else(|| PathBuf::from("output/routine_data.json"));
 
             let ctx = academic_routine::BotContext {
                 routine_path,
@@ -745,13 +779,13 @@ async fn main() {
                 }
             };
 
-            let ics_path = PathBuf::from("routine.ics");
+            let ics_path = resolve_ics_path();
             if !ics_path.exists() {
                 let _ = export_ics_file(&schedule, &ics_path, state.semester_end_date);
             }
 
             println!("{} Syncing routine, calendar, and state to GitHub Gist...", "🔄".cyan());
-            let json_path = PathBuf::from("routine_data.json");
+            let json_path = resolve_routine_path(None).unwrap_or_else(|| PathBuf::from("output/routine_data.json"));
             let result = if json_path.exists() {
                 academic_routine::sync_gist_bundle_with_state(gid, &ics_path, &json_path, Some(&state_file)).await
             } else {

@@ -464,6 +464,8 @@ async def run_multi_account_extraction(output_path: Path, headed: bool = False):
     }
 
     # Atomic write
+    if output_path.parent:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_suffix(".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -484,8 +486,8 @@ def main():
         "--output",
         "-o",
         type=Path,
-        default=Path("routine_data.json"),
-        help="Target output JSON path (default: routine_data.json)",
+        default=Path("output/routine_data.json"),
+        help="Target output JSON path (default: output/routine_data.json)",
     )
     parser.add_argument(
         "--headed",

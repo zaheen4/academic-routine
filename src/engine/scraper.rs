@@ -81,7 +81,7 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
             python_bin.to_str().unwrap_or("python3"),
             script_path.to_str().unwrap_or("scraper/extract_ucam.py"),
             "--output",
-            output_path.to_str().unwrap_or("routine_data.json"),
+            output_path.to_str().unwrap_or("output/routine_data.json"),
         ]);
         c
     } else {
@@ -89,7 +89,7 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
         c.args([
             script_path.to_str().unwrap_or("scraper/extract_ucam.py"),
             "--output",
-            output_path.to_str().unwrap_or("routine_data.json"),
+            output_path.to_str().unwrap_or("output/routine_data.json"),
         ]);
         if headed {
             c.arg("--headed");
@@ -158,7 +158,7 @@ pub fn run_gsheet_sync(data_path: &Path) -> Result<(), ScraperError> {
     cmd.args([
         script_path.to_str().unwrap_or("scraper/sync_gsheet.py"),
         "--data",
-        data_path.to_str().unwrap_or("routine_data.json"),
+        data_path.to_str().unwrap_or("output/routine_data.json"),
     ]);
 
     let result = cmd

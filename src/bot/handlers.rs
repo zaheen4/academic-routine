@@ -115,10 +115,26 @@ impl BotContext {
         Ok((sched, state))
     }
 
+    /// Resolves the .ics file path, prioritizing output/routine.ics if it exists or by default.
+    pub fn resolve_ics_path(&self) -> PathBuf {
+        let output_ics = PathBuf::from("output/routine.ics");
+        if output_ics.exists() {
+            return output_ics;
+        }
+        let local_ics = PathBuf::from("routine.ics");
+        if local_ics.exists() {
+            return local_ics;
+        }
+        output_ics
+    }
+
     /// Regenerates routine.ics and syncs to GitHub Gist if configured.
     pub async fn regenerate_and_sync(&self) -> Result<String, String> {
         let (sched, state) = self.load_active_schedule()?;
-        let ics_path = PathBuf::from("routine.ics");
+        let ics_path = self.resolve_ics_path();
+        if let Some(parent) = ics_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
 
         export_ics_file(&sched, &ics_path, state.semester_end_date)
             .map_err(|e| format!("Failed to export .ics: {e}"))?;
@@ -136,7 +152,7 @@ impl BotContext {
             return crate::exporters::gist::sync_gist_file(gid, &ics_path).await;
         }
 
-        Ok("routine.ics".to_string())
+        Ok(ics_path.display().to_string())
     }
 
     /// Refreshes routine_data.json and routine_state.json from GitHub Gist, writes locally, and updates calendar feed.
@@ -875,7 +891,10 @@ pub async fn handle_command(
                 }
             };
 
-            let ics_path = PathBuf::from("routine.ics");
+            let ics_path = ctx.resolve_ics_path();
+            if let Some(parent) = ics_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             if let Err(e) = export_ics_file(&sched, &ics_path, state.semester_end_date) {
                 bot.send_message(chat_id, format!("❌ Failed to generate .ics: {e}"))
                     .await?;

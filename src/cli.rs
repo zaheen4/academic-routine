@@ -114,8 +114,8 @@ pub enum Commands {
 
     /// Export schedule to calendar or file formats
     Export {
-        /// Export to iCalendar (.ics) format file path (defaults to 'routine.ics')
-        #[arg(long, default_value = "routine.ics")]
+        /// Export to iCalendar (.ics) format file path (defaults to 'output/routine.ics')
+        #[arg(long, default_value = "output/routine.ics")]
         ics: PathBuf,
 
         /// Explicit semester end date for recurrence UNTIL rule (format: YYYY-MM-DD)
@@ -152,7 +152,7 @@ pub enum Commands {
 
     /// Synchronize routine data directly to Google Spreadsheet (CSE-03_B_ClassRoutine)
     SyncGsheet {
-        /// Explicit path to routine JSON file (defaults to routine_data.json)
+        /// Explicit path to routine JSON file (defaults to output/routine_data.json)
         #[arg(short, long)]
         file: Option<PathBuf>,
     },

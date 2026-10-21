@@ -296,10 +296,21 @@ def sync_to_google_sheet(json_path: Path, key_path: Path, spreadsheet_name: str)
 
 def main():
     parser = argparse.ArgumentParser(description="Sync routine to Google Spreadsheet")
-    parser.add_argument("--data", type=Path, default=Path("routine_data.json"))
+    parser.add_argument("--data", type=Path, default=Path("output/routine_data.json"))
     parser.add_argument("--key", type=Path, default=None)
     parser.add_argument("--sheet", type=str, default=None)
     args = parser.parse_args()
+
+    # Resolve routine data path
+    data_path = args.data
+    if not data_path.exists():
+        fallback_root = Path("routine_data.json")
+        if fallback_root.exists():
+            data_path = fallback_root
+        else:
+            fallback_legacy = Path("output_of_fetched_routine/final_combined_routine.json")
+            if fallback_legacy.exists():
+                data_path = fallback_legacy
 
     # Resolve key path
     key_path = (
@@ -313,7 +324,7 @@ def main():
 
     sheet_name = args.sheet or os.getenv("SPREADSHEET_NAME", "CSE-03_B_ClassRoutine")
 
-    success = sync_to_google_sheet(args.data, key_path, sheet_name)
+    success = sync_to_google_sheet(data_path, key_path, sheet_name)
     sys.exit(0 if success else 1)
 
 
