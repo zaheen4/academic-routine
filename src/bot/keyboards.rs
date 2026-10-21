@@ -67,7 +67,7 @@ pub fn routine_days_keyboard(active_day: Option<DayOfWeek>) -> InlineKeyboardMar
         .into_iter()
         .map(|(day, label, cb)| {
             let text = if Some(day) == active_day {
-                format!("• {label} •")
+                format!("❯ {label} ❮")
             } else {
                 label.to_string()
             };
@@ -75,8 +75,14 @@ pub fn routine_days_keyboard(active_day: Option<DayOfWeek>) -> InlineKeyboardMar
         })
         .collect();
 
+    let overview_label = if active_day.is_none() {
+        "❯ 📋 Overview ❮"
+    } else {
+        "📋 Overview"
+    };
+
     let row2 = vec![
-        InlineKeyboardButton::callback("📋 Overview", "day_all"),
+        InlineKeyboardButton::callback(overview_label, "day_all"),
         InlineKeyboardButton::callback("📅 Today", "nav_today"),
     ];
 

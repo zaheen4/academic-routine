@@ -176,6 +176,12 @@ impl BotContext {
     }
 }
 
+/// Formats a simplified live timestamp for card footers.
+#[must_use]
+pub fn live_timestamp() -> String {
+    format!("<i>Updated {}</i>", academic_now().format("%I:%M:%S %p"))
+}
+
 /// Renders the Today schedule card with live badges and navigation buttons.
 #[must_use]
 pub fn render_today_card(
@@ -194,8 +200,9 @@ pub fn render_today_card(
 
     if classes.is_empty() {
         let text = format!(
-            "{vacation_banner}🎉 <b>No classes scheduled for today ({})!</b> Enjoy your free time.",
-            today.full_name()
+            "{vacation_banner}🎉 <b>No classes scheduled for today ({})!</b> Enjoy your free time.\n───────────────────────────\n{}",
+            today.full_name(),
+            live_timestamp()
         );
         return (text, today_keyboard());
     }
@@ -238,7 +245,10 @@ pub fn render_today_card(
         text.push('\n');
     }
 
-    text.push_str("───────────────────────────\n<i>💡 30-minute reminder notifications are active</i>");
+    text.push_str(&format!(
+        "───────────────────────────\n{}\n<i>💡 30-minute reminder notifications are active</i>",
+        live_timestamp()
+    ));
     (text, today_keyboard())
 }
 
@@ -249,7 +259,10 @@ pub fn render_next_card(
     state: &RoutineState,
 ) -> (String, InlineKeyboardMarkup) {
     if state.is_vacation_active() {
-        let text = "🏖️ <b>Vacation Mode Active (Semester Break)</b>\nNo classes are currently scheduled. Send <code>/vacation off</code> when classes resume.".to_string();
+        let text = format!(
+            "🏖️ <b>Vacation Mode Active (Semester Break)</b>\nNo classes are currently scheduled. Send <code>/vacation off</code> when classes resume.\n───────────────────────────\n{}",
+            live_timestamp()
+        );
         return (text, next_keyboard());
     }
 
@@ -266,14 +279,16 @@ pub fn render_next_card(
              <code>{}</code> (ends in <b>{} mins</b>)\n\n\
              📖 <b>{}: {}</b>{}\n\
              🏛️ Room: <code>{}</code>\n\
-             👤 Faculty: <i>{}</i>\n───────────────────────────",
+             👤 Faculty: <i>{}</i>\n───────────────────────────\n\
+             {}",
             active.time_slot.format_12h(),
             mins_left,
             active.code,
             escape_html(&active.title),
             lab_badge,
             active.room,
-            escape_html(&active.teacher.name)
+            escape_html(&active.teacher.name),
+            live_timestamp()
         );
         (text, next_keyboard())
     } else if let Some(next) = classes.iter().find(|c| c.time_slot.start() > now) {
@@ -286,18 +301,22 @@ pub fn render_next_card(
              📖 <b>{}: {}</b>{}\n\
              🏛️ Room: <code>{}</code>\n\
              👤 Faculty: <i>{}</i>\n───────────────────────────\n\
-             <i>Tap refresh to update live countdown</i>",
+             {}",
             mins_until,
             next.time_slot.start().format("%I:%M %p"),
             next.code,
             escape_html(&next.title),
             lab_badge,
             next.room,
-            escape_html(&next.teacher.name)
+            escape_html(&next.teacher.name),
+            live_timestamp()
         );
         (text, next_keyboard())
     } else {
-        let text = "🏁 <b>All classes for today have concluded!</b>\n───────────────────────────\nGood job! Send /tomorrow or tap below to preview upcoming days.".to_string();
+        let text = format!(
+            "🏁 <b>All classes for today have concluded!</b>\n───────────────────────────\n{}\n<i>Send /tomorrow or tap below to preview upcoming days.</i>",
+            live_timestamp()
+        );
         (text, next_keyboard())
     }
 }
@@ -338,7 +357,10 @@ pub fn render_tomorrow_card(sched: &Schedule) -> (String, InlineKeyboardMarkup) 
         text.push('\n');
     }
 
-    text.push_str("───────────────────────────\n<i>💡 Send /routine to view the full week</i>");
+    text.push_str(&format!(
+        "───────────────────────────\n{}\n<i>💡 Send /routine to view the full week</i>",
+        live_timestamp()
+    ));
     (text, today_keyboard())
 }
 
@@ -380,7 +402,10 @@ pub fn render_routine_overview(sched: &Schedule) -> (String, InlineKeyboardMarku
         text.push('\n');
     }
 
-    text.push_str("───────────────────────────\n<i>Tap any day below to expand full instructor and room details:</i>");
+    text.push_str(&format!(
+        "───────────────────────────\n{}\n<i>Tap any day below to expand full instructor and room details:</i>",
+        live_timestamp()
+    ));
     (text, routine_days_keyboard(None))
 }
 
@@ -390,8 +415,9 @@ pub fn render_routine_day(sched: &Schedule, day: DayOfWeek) -> (String, InlineKe
     let classes = sched.for_day(day);
     if classes.is_empty() {
         let text = format!(
-            "📋 <b>Schedule for {}</b>\n───────────────────────────\nNo classes scheduled on this day! Enjoy your break.",
-            day.full_name()
+            "📋 <b>Schedule for {}</b>\n───────────────────────────\nNo classes scheduled on this day! Enjoy your break.\n───────────────────────────\n{}",
+            day.full_name(),
+            live_timestamp()
         );
         return (text, routine_days_keyboard(Some(day)));
     }
@@ -418,7 +444,10 @@ pub fn render_routine_day(sched: &Schedule, day: DayOfWeek) -> (String, InlineKe
         text.push('\n');
     }
 
-    text.push_str("───────────────────────────\n<i>Tap another day to switch views:</i>");
+    text.push_str(&format!(
+        "───────────────────────────\n{}",
+        live_timestamp()
+    ));
     (text, routine_days_keyboard(Some(day)))
 }
 
@@ -1275,23 +1304,20 @@ pub async fn handle_callback_query(
         }
     }
 
-    let (card, toast) = match data {
-        "nav_today" => (render_today_card(&sched, &state), "📅 Today's Schedule"),
-        "nav_next" => (render_next_card(&sched, &state), "⏱️ Refreshing Next Class..."),
-        "nav_tomorrow" => (render_tomorrow_card(&sched), "🗓️ Tomorrow's Preview"),
-        "nav_routine" | "day_all" => (render_routine_overview(&sched), "📋 Routine Overview"),
-        "nav_teachers" => (render_teachers_directory(&sched), "📚 Faculty Directory"),
-        "nav_free" => (render_free_card(&sched, &state), "☕ Free Study Breaks"),
-        "day_sun" => (render_routine_day(&sched, DayOfWeek::Sun), "Sunday Routine"),
-        "day_mon" => (render_routine_day(&sched, DayOfWeek::Mon), "Monday Routine"),
-        "day_tue" => (render_routine_day(&sched, DayOfWeek::Tue), "Tuesday Routine"),
-        "day_wed" => (render_routine_day(&sched, DayOfWeek::Wed), "Wednesday Routine"),
-        "day_thu" => (render_routine_day(&sched, DayOfWeek::Thu), "Thursday Routine"),
+    let card = match data {
+        "nav_today" => render_today_card(&sched, &state),
+        "nav_next" => render_next_card(&sched, &state),
+        "nav_tomorrow" => render_tomorrow_card(&sched),
+        "nav_routine" | "day_all" => render_routine_overview(&sched),
+        "nav_teachers" => render_teachers_directory(&sched),
+        "nav_free" => render_free_card(&sched, &state),
+        "day_sun" => render_routine_day(&sched, DayOfWeek::Sun),
+        "day_mon" => render_routine_day(&sched, DayOfWeek::Mon),
+        "day_tue" => render_routine_day(&sched, DayOfWeek::Tue),
+        "day_wed" => render_routine_day(&sched, DayOfWeek::Wed),
+        "day_thu" => render_routine_day(&sched, DayOfWeek::Thu),
         _ => return Ok(()),
     };
-
-    // Acknowledge callback immediately with toast feedback
-    let _ = bot.answer_callback_query(q.id).text(toast).await;
 
     let (text, markup) = card;
 
@@ -1314,6 +1340,8 @@ pub async fn handle_callback_query(
         }
     }
 
+    // Acknowledge callback silently (stops client click state with zero popup clutter)
+    let _ = bot.answer_callback_query(q.id).await;
     Ok(())
 }
 
