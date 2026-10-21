@@ -163,11 +163,67 @@ async fn main() {
                                 Err(e) => eprintln!("⚠️ Gist sync notice: {e}"),
                             }
                         }
+
+                        // Check if Google Cloud Service Account key is available for Google Sheets sync
+                        let service_key_candidates = [
+                            PathBuf::from("google_cloud_keys/service_account_key.json"),
+                            PathBuf::from("/home/eyepatch/Documents/projects/routine-to-gsheet/google_cloud_keys/service_account_key.json"),
+                        ];
+                        let has_service_key = std::env::var("GOOGLE_SERVICE_ACCOUNT_KEY")
+                            .map(PathBuf::from)
+                            .map(|p| p.exists())
+                            .unwrap_or(false)
+                            || service_key_candidates.iter().any(|p| p.exists());
+
+                        if has_service_key {
+                            let sheet_name = std::env::var("SPREADSHEET_NAME")
+                                .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
+                            println!("📊 Syncing routine to Google Spreadsheet ({sheet_name})...");
+                            match academic_routine::run_gsheet_sync(&path) {
+                                Ok(()) => {
+                                    println!(
+                                        "{} Synced to Google Spreadsheet (NewMain & backend tabs)!",
+                                        "✅".green().bold()
+                                    );
+                                }
+                                Err(e) => eprintln!("⚠️ Google Sheets sync note: {e}"),
+                            }
+                        }
                     }
                 }
                 Err(e) => {
                     eprintln!(
                         "{} Failed to extract routine from UCAM: {e}",
+                        "❌".red().bold()
+                    );
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Some(Commands::SyncGsheet { file }) => {
+            let target_json = file
+                .clone()
+                .or_else(|| resolve_routine_path(cli.file.as_ref()))
+                .unwrap_or_else(|| PathBuf::from("routine_data.json"));
+
+            let sheet_name = std::env::var("SPREADSHEET_NAME")
+                .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
+            println!(
+                "📊 Syncing routine from {} to Google Spreadsheet ({sheet_name})...",
+                target_json.display().to_string().cyan()
+            );
+
+            match academic_routine::run_gsheet_sync(&target_json) {
+                Ok(()) => {
+                    println!(
+                        "{} Successfully updated Google Spreadsheet (NewMain & backend)! 🎉",
+                        "✅".green().bold()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to sync Google Spreadsheet: {e}",
                         "❌".red().bold()
                     );
                     std::process::exit(1);

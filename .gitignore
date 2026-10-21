@@ -11,6 +11,8 @@ venv/
 .env
 *.token
 *credentials*.json
+*key*.json
+google_cloud_keys/
 
 # Data, temporary files & export caches
 output_of_fetched_routine/

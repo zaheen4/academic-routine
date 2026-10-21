@@ -125,3 +125,56 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
 
     Ok(output_path.to_path_buf())
 }
+
+/// Runs the Google Sheets routine synchronizer script (`scraper/sync_gsheet.py`).
+///
+/// # Errors
+/// Returns [`ScraperError`] if Python is missing or the sync script fails.
+pub fn run_gsheet_sync(data_path: &Path) -> Result<(), ScraperError> {
+    let python_candidates = [
+        PathBuf::from(".venv/bin/python"),
+        PathBuf::from("venv/bin/python"),
+        PathBuf::from("/home/eyepatch/Documents/projects/routine-to-gsheet/.venv/bin/python"),
+        PathBuf::from("python3"),
+        PathBuf::from("python"),
+    ];
+
+    let python_bin = python_candidates
+        .into_iter()
+        .find(|p| p.exists() || is_executable_available(p.to_str().unwrap_or("python3")))
+        .ok_or(ScraperError::PythonNotFound)?;
+
+    let script_candidates = [
+        PathBuf::from("scraper/sync_gsheet.py"),
+        PathBuf::from("/home/eyepatch/Documents/projects/academic-routine/scraper/sync_gsheet.py"),
+    ];
+
+    let script_path = script_candidates
+        .into_iter()
+        .find(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("scraper/sync_gsheet.py"));
+
+    let mut cmd = Command::new(&python_bin);
+    cmd.args([
+        script_path.to_str().unwrap_or("scraper/sync_gsheet.py"),
+        "--data",
+        data_path.to_str().unwrap_or("routine_data.json"),
+    ]);
+
+    let result = cmd
+        .output()
+        .map_err(|e| ScraperError::ExecutionFailed(e.to_string()))?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.to_string()
+        } else {
+            stderr.to_string()
+        };
+        return Err(ScraperError::ExecutionFailed(detail));
+    }
+
+    Ok(())
+}

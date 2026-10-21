@@ -90,6 +90,13 @@ pub enum Commands {
     /// Display teacher directory with phone numbers and emails
     Teachers,
 
+    /// Synchronize routine data directly to Google Spreadsheet (CSE-03_B_ClassRoutine)
+    SyncGsheet {
+        /// Explicit path to routine JSON file (defaults to routine_data.json)
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+    },
+
     /// Scrape the latest routine directly from UCAM portal, update calendar, and sync Gist
     SyncUcam {
         /// Force re-scrape even if routine data is fresh
