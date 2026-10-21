@@ -1392,10 +1392,8 @@ mod tests {
 
     #[test]
     fn test_bot_context_load_active_schedule() {
-        let scraper_path = PathBuf::from(
-            "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
-        );
-        if !scraper_path.exists() {
+        let routine_path = PathBuf::from("output/routine_data.json");
+        if !routine_path.exists() {
             return;
         }
 
@@ -1403,7 +1401,7 @@ mod tests {
         let state_path = temp_dir.path().join("state.json");
 
         let ctx = BotContext {
-            routine_path: scraper_path,
+            routine_path,
             state_path: state_path.clone(),
             section: Some("B2".to_string()),
             no_http: true,

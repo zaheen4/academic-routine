@@ -27,7 +27,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sync_gsheet")
 
-# Layout Constants matching routine-to-gsheet
+# Layout Constants for Google Spreadsheet
 SHEET_HEADERS = [
     "Course",
     "Course Title",
@@ -317,10 +317,6 @@ def main():
         args.key
         or Path(os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "google_cloud_keys/service_account_key.json"))
     )
-    if not key_path.exists():
-        fallback = Path("/home/eyepatch/Documents/projects/routine-to-gsheet/google_cloud_keys/service_account_key.json")
-        if fallback.exists():
-            key_path = fallback
 
     sheet_name = args.sheet or os.getenv("SPREADSHEET_NAME", "CSE-03_B_ClassRoutine")
 

@@ -3,9 +3,7 @@ use std::path::Path;
 
 #[test]
 fn test_real_ucam_file_ingestion_if_available() {
-    let real_path = Path::new(
-        "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
-    );
+    let real_path = Path::new("output/routine_data.json");
 
     if !real_path.exists() {
         eprintln!("Skipping live file test; file not found on current host.");

@@ -36,13 +36,6 @@ fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
         return Some(local_path);
     }
 
-    let default_scraper_path = PathBuf::from(
-        "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
-    );
-    if default_scraper_path.exists() {
-        return Some(default_scraper_path);
-    }
-
     None
 }
 
@@ -494,7 +487,6 @@ async fn main() {
                         if !*no_gsheet && state.auto_sync_gsheet {
                             let service_key_candidates = [
                                 PathBuf::from("google_cloud_keys/service_account_key.json"),
-                                PathBuf::from("/home/eyepatch/Documents/projects/routine-to-gsheet/google_cloud_keys/service_account_key.json"),
                             ];
                             let has_service_key = std::env::var("GOOGLE_SERVICE_ACCOUNT_KEY")
                                 .map(PathBuf::from)

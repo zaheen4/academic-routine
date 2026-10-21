@@ -15,6 +15,7 @@ __pycache__/
 *credentials*.json
 *key*.json
 google_cloud_keys/
+configs/
 
 # Data, temporary files & export caches
 output/*

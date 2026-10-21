@@ -101,9 +101,7 @@ fn test_all_bot_commands_syntax_parsing() {
 
 #[test]
 fn test_free_breaks_calculation_logic() {
-    let scraper_path = Path::new(
-        "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
-    );
+    let scraper_path = Path::new("output/routine_data.json");
     if !scraper_path.exists() {
         return;
     }
@@ -137,9 +135,7 @@ fn test_free_breaks_calculation_logic() {
 
 #[test]
 fn test_next_class_countdown_simulation() {
-    let scraper_path = Path::new(
-        "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
-    );
+    let scraper_path = Path::new("output/routine_data.json");
     if !scraper_path.exists() {
         return;
     }
@@ -194,9 +190,7 @@ fn test_next_class_countdown_simulation() {
 
 #[test]
 fn test_teachers_directory_extraction() {
-    let scraper_path = Path::new(
-        "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
-    );
+    let scraper_path = Path::new("output/routine_data.json");
     if !scraper_path.exists() {
         return;
     }
@@ -221,9 +215,7 @@ fn test_teachers_directory_extraction() {
 
 #[test]
 fn test_bot_context_lifecycle_and_calendar_sync() {
-    let scraper_path = PathBuf::from(
-        "/home/eyepatch/Documents/projects/routine-to-gsheet/output_of_fetched_routine/final_combined_routine.json",
-    );
+    let scraper_path = PathBuf::from("output/routine_data.json");
     if !scraper_path.exists() {
         return;
     }

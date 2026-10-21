@@ -49,7 +49,6 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
     let python_candidates = [
         PathBuf::from(".venv/bin/python"),
         PathBuf::from("venv/bin/python"),
-        PathBuf::from("/home/eyepatch/Documents/projects/routine-to-gsheet/.venv/bin/python"),
         PathBuf::from("python3"),
         PathBuf::from("python"),
     ];
@@ -134,7 +133,6 @@ pub fn run_gsheet_sync(data_path: &Path) -> Result<(), ScraperError> {
     let python_candidates = [
         PathBuf::from(".venv/bin/python"),
         PathBuf::from("venv/bin/python"),
-        PathBuf::from("/home/eyepatch/Documents/projects/routine-to-gsheet/.venv/bin/python"),
         PathBuf::from("python3"),
         PathBuf::from("python"),
     ];

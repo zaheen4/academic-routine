@@ -182,10 +182,11 @@ def load_accounts() -> list[dict]:
         logger.info("Loaded %d accounts from individual environment variables.", len(env_accounts))
         return env_accounts
 
-    # 3. Fallback to local configs (e.g. routine-to-gsheet or configs/ucam_accounts.json)
+    # 3. Fallback to local configs
     fallback_paths = [
         Path("configs/ucam_accounts.json"),
-        Path("/home/eyepatch/Documents/projects/routine-to-gsheet/configs_to_edit/ucam_login_credentials.json"),
+        Path("configs_to_edit/ucam_login_credentials.json"),
+        Path("ucam_login_credentials.json"),
     ]
     for p in fallback_paths:
         if p.exists():
