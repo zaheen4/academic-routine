@@ -105,3 +105,78 @@ fn duration_until_next_6am() -> std::time::Duration {
 
     std::time::Duration::from_secs(diff_seconds)
 }
+
+/// Proactively monitors upcoming classes for today and sends a Telegram reminder 30 minutes before each class starts.
+pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc<BotContext>) {
+    use chrono::Timelike;
+    let mut notified_sessions = std::collections::HashSet::<String>::new();
+    let mut current_day = current_academic_day();
+
+    loop {
+        // Check every 30 seconds
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+
+        let today = current_academic_day();
+        if today != current_day {
+            // New academic day: reset notified sessions
+            notified_sessions.clear();
+            current_day = today;
+        }
+
+        let (sched, mut state) = match ctx.load_active_schedule() {
+            Ok(res) => res,
+            Err(_) => continue,
+        };
+
+        if state.is_vacation_active() || !state.morning_alerts {
+            continue;
+        }
+
+        let now = academic_now();
+        let now_time = now.time();
+        let now_mins = now_time.hour() * 60 + now_time.minute();
+
+        let classes = sched.for_day(today);
+        for c in &classes {
+            let start_mins = c.time_slot.start().hour() * 60 + c.time_slot.start().minute();
+            let session_id = format!("{}-{}-{}-{}", today, c.code, c.section, c.time_slot.start());
+
+            if start_mins >= now_mins {
+                let diff = start_mins - now_mins;
+                // Alert in the 29-30 minute window
+                if diff <= 30 && diff >= 29 && !notified_sessions.contains(&session_id) {
+                    notified_sessions.insert(session_id);
+
+                    let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+                    let mut msg = format!(
+                        "⏰ <b>Upcoming Class Reminder (Starts in {} minutes!)</b>\n\n\
+                         • Course: <b>[{}] {}</b>{}\n\
+                         • Code: <code>{}</code>\n\
+                         • Room: <b>Room {}</b>\n\
+                         • Time: <b>{} – {}</b>\n",
+                        diff,
+                        escape_html(&c.section),
+                        escape_html(&c.title),
+                        lab_badge,
+                        escape_html(&c.code),
+                        escape_html(&c.room),
+                        c.time_slot.start().format("%I:%M %p"),
+                        c.time_slot.end().format("%I:%M %p")
+                    );
+
+                    if !c.teacher.name.is_empty() {
+                        msg.push_str(&format!(
+                            "• Instructor: {}\n",
+                            escape_html(&c.teacher.formatted_summary())
+                        ));
+                    }
+
+                    let _ = bot
+                        .send_message(ChatId(target_chat_id), msg)
+                        .parse_mode(teloxide::types::ParseMode::Html)
+                        .await;
+                }
+            }
+        }
+    }
+}

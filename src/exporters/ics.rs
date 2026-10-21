@@ -6,7 +6,7 @@
 //! Features:
 //! - Deterministic stable `UID`s (prevents duplicate events upon re-import or feed refresh).
 //! - Recurrence rules (`RRULE`) with configurable semester end dates (`UNTIL`).
-//! - Automatic sound & display alarms 15 minutes before every class (`VALARM`).
+//! - Automatic sound & display alarms 30 minutes before every class (`VALARM`).
 //! - Rich clickable event descriptions with instructor phone numbers and emails.
 
 use crate::model::day::DayOfWeek;
@@ -83,9 +83,9 @@ pub fn generate_ics(schedule: &Schedule, semester_end_date: Option<NaiveDate>) -
         ics.push_str(&format!("DESCRIPTION:{}\r\n", escape_ics(&description)));
         ics.push_str("STATUS:CONFIRMED\r\n");
 
-        // 15-minute sound/display notification alarm
+        // 30-minute sound/display notification alarm
         ics.push_str("BEGIN:VALARM\r\n");
-        ics.push_str("TRIGGER:-PT15M\r\n");
+        ics.push_str("TRIGGER:-PT30M\r\n");
         ics.push_str("ACTION:DISPLAY\r\n");
         ics.push_str(&format!(
             "DESCRIPTION:Class Reminder: {} in {}\r\n",
@@ -170,9 +170,9 @@ mod tests {
         assert!(ics.contains("LOCATION:Room 120\r\n"));
         assert!(ics.contains("RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261130T235959Z\r\n"));
 
-        // Verify 15-minute alarm
+        // Verify 30-minute alarm
         assert!(ics.contains("BEGIN:VALARM\r\n"));
-        assert!(ics.contains("TRIGGER:-PT15M\r\n"));
+        assert!(ics.contains("TRIGGER:-PT30M\r\n"));
         assert!(ics.contains("END:VALARM\r\n"));
     }
 

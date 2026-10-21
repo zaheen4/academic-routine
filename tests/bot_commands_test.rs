@@ -15,6 +15,8 @@ fn test_all_bot_commands_syntax_parsing() {
     assert_eq!(Command::parse("/tomorrow", "").unwrap(), Command::Tomorrow);
     assert_eq!(Command::parse("/free", "").unwrap(), Command::Free);
     assert_eq!(Command::parse("/teachers", "").unwrap(), Command::Teachers);
+    assert_eq!(Command::parse("/routine", "").unwrap(), Command::Routine);
+    assert_eq!(Command::parse("/week", "").unwrap(), Command::Week);
     assert_eq!(Command::parse("/status", "").unwrap(), Command::Status);
     assert_eq!(Command::parse("/completed", "").unwrap(), Command::Completed);
     assert_eq!(Command::parse("/finished", "").unwrap(), Command::Finished);

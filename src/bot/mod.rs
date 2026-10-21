@@ -4,7 +4,7 @@ pub mod handlers;
 pub mod scheduler;
 
 pub use handlers::{handle_command, BotContext, Command};
-pub use scheduler::start_morning_scheduler;
+pub use scheduler::{start_class_reminder_daemon, start_morning_scheduler};
 
 use std::sync::Arc;
 use teloxide::prelude::*;
@@ -44,6 +44,13 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
             let sched_ctx = Arc::clone(&shared_ctx);
             tokio::spawn(async move {
                 start_morning_scheduler(sched_bot, chat_id, sched_ctx).await;
+            });
+
+            // Spawn 30-minute before-class proactive reminder daemon
+            let reminder_bot = bot.clone();
+            let reminder_ctx = Arc::clone(&shared_ctx);
+            tokio::spawn(async move {
+                start_class_reminder_daemon(reminder_bot, chat_id, reminder_ctx).await;
             });
 
             // Inspect Telegram handle on startup to cache into routine_state.json

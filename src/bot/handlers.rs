@@ -40,6 +40,9 @@ pub enum Command {
     /// Instructor contact directory
     #[command(description = "List instructors with phone numbers and emails")]
     Teachers,
+    /// View complete weekly routine schedule
+    #[command(description = "Show full weekly routine timetable")]
+    Routine,
     /// Display subsystem health card and alert settings
     #[command(description = "Show routine status, active alerts, vacation mode, and synced feeds")]
     Status,
@@ -64,6 +67,9 @@ pub enum Command {
     /// Refresh routine directly from UCAM portal and sync calendar
     #[command(description = "Refresh routine directly from UCAM portal and update calendar")]
     Sync,
+    /// Alias for /routine
+    #[command(description = "Alias for /routine")]
+    Week,
     /// Alias for /complete (e.g. /finish CSE-4125)
     #[command(description = "Alias for /complete")]
     Finish(String),
@@ -200,6 +206,7 @@ pub async fn handle_command(
                  💡 <b>Quick Tips:</b>\n\
                  • Send <code>/today</code> to see your schedule for today.\n\
                  • Send <code>/next</code> to see what class is coming up next.\n\
+                 • Send <code>/routine</code> to view the entire weekly timetable.\n\
                  • Send <code>/tomorrow</code> to preview tomorrow's classes.\n\
                  • Send <code>/status</code> to check system health, alerts, and vacation mode.\n\
                  • Send <code>/complete &lt;CODE&gt;</code> when a course syllabus is done.\n\
@@ -645,9 +652,27 @@ pub async fn handle_command(
                 bot.send_message(chat_id, "ℹ️ No courses are currently marked as completed.")
                     .await?;
             } else {
+                let raw_sched = load_routine_file(&ctx.routine_path).ok();
                 let mut text = "🎓 <b>Currently Completed Courses:</b>\n\n".to_string();
                 for c in &state.dropped_courses {
-                    text.push_str(&format!("• <code>{}</code>\n", escape_html(c)));
+                    let title = raw_sched
+                        .as_ref()
+                        .and_then(|s| {
+                            s.entries
+                                .iter()
+                                .find(|e| crate::model::state::codes_match(&e.code, c))
+                        })
+                        .map(|e| e.title.as_str());
+
+                    if let Some(t) = title {
+                        text.push_str(&format!(
+                            "• <code>{}</code>: <b>{}</b>\n",
+                            escape_html(c),
+                            escape_html(t)
+                        ));
+                    } else {
+                        text.push_str(&format!("• <code>{}</code>\n", escape_html(c)));
+                    }
                 }
                 text.push_str(
                     "\n<i>Send <code>/resume &lt;CODE&gt;</code> to re-activate any course.</i>",
@@ -656,6 +681,54 @@ pub async fn handle_command(
                     .parse_mode(ParseMode::Html)
                     .await?;
             }
+        }
+
+        Command::Routine | Command::Week => {
+            let (sched, _) = match ctx.load_active_schedule() {
+                Ok(res) => res,
+                Err(e) => {
+                    bot.send_message(chat_id, format!("❌ {e}")).await?;
+                    return Ok(());
+                }
+            };
+
+            let mut text = format!(
+                "📅 <b>Complete Weekly Academic Routine</b>\n\
+                 <i>Semester: {} | {} classes total</i>\n\n",
+                escape_html(&sched.semester_name),
+                sched.entries.len()
+            );
+
+            for day in crate::model::day::DayOfWeek::all() {
+                let day_classes = sched.for_day(*day);
+                if day_classes.is_empty() {
+                    continue;
+                }
+
+                text.push_str(&format!(
+                    "🗓️ <b>{}</b> ({} classes):\n",
+                    day.full_name(),
+                    day_classes.len()
+                ));
+                for c in day_classes {
+                    let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+                    text.push_str(&format!(
+                        "• <b>{}</b> | Room <b>{}</b>\n  └ <code>{}</code>: <b>{}</b>{}\n",
+                        c.time_slot.format_12h(),
+                        c.room,
+                        c.code,
+                        escape_html(&c.title),
+                        lab_badge
+                    ));
+                }
+                text.push('\n');
+            }
+
+            text.push_str("💡 <i>Send /today or /next for daily tracking.</i>");
+
+            bot.send_message(chat_id, text)
+                .parse_mode(ParseMode::Html)
+                .await?;
         }
 
         Command::Alerts(action) => {
@@ -810,7 +883,7 @@ pub async fn handle_command(
             }
 
             bot.send_document(chat_id, InputFile::file(&ics_path))
-                .caption("📅 <b>Your University Class Schedule (.ics)</b>\n\nTap this file on your phone to import all classes and 15-minute alarms directly into your calendar app with 1 tap!")
+                .caption("📅 <b>Your University Class Schedule (.ics)</b>\n\nTap this file on your phone to import all classes and 30-minute alarms directly into your calendar app with 1 tap!")
                 .parse_mode(ParseMode::Html)
                 .await?;
         }

@@ -94,9 +94,18 @@ async fn main() {
             if state.dropped_courses.is_empty() {
                 println!("{} No courses are currently marked as completed.", "ℹ️".green());
             } else {
+                let raw_sched = resolve_routine_path(cli.file.as_ref()).and_then(|p| load_routine_file(&p).ok());
                 println!("{} Currently completed courses:", "🎓".cyan().bold());
                 for c in &state.dropped_courses {
-                    println!("   • {}", c.bold());
+                    let title_opt = raw_sched
+                        .as_ref()
+                        .and_then(|s| s.entries.iter().find(|e| academic_routine::codes_match(&e.code, c)))
+                        .map(|e| e.title.as_str());
+                    if let Some(t) = title_opt {
+                        println!("   • {}: {}", c.bold(), t.cyan());
+                    } else {
+                        println!("   • {}", c.bold());
+                    }
                 }
             }
             return;
@@ -695,7 +704,7 @@ async fn main() {
                     if let Some(until) = end_date {
                         println!("   • Automatic expiry (UNTIL): {}", until);
                     }
-                    println!("   • Alarms included: 15-minute sound & notification popups");
+                    println!("   • Alarms included: 30-minute sound & notification popups");
 
                     // Check if Gist sync requested or configured
                     if sync_gist || state.gist_id.is_some() {
