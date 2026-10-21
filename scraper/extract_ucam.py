@@ -390,18 +390,51 @@ async def run_multi_account_extraction(output_path: Path, headed: bool = False):
     processed_accounts = []
     latest_semester = "Level 4 Term 1"
 
-    for acc in accounts:
-        try:
-            sem, entries = await extract_account_routine(acc, chrome_bin, headed=headed)
-            if sem:
-                latest_semester = sem
-            all_entries.extend(entries)
-            processed_accounts.append(acc.get("id", acc["username"]))
-        except Exception as e:
-            logger.error("Failed to extract routine for account %s: %s", acc.get("id"), e)
+    for idx, acc in enumerate(accounts):
+        if idx > 0:
+            await asyncio.sleep(4)  # Settle pause between consecutive browser instances
+
+        success = False
+        for attempt in range(1, 3):
+            try:
+                sem, entries = await extract_account_routine(acc, chrome_bin, headed=headed)
+                if sem:
+                    latest_semester = sem
+                all_entries.extend(entries)
+                processed_accounts.append(acc.get("id", acc["username"]))
+                success = True
+                break
+            except Exception as e:
+                logger.warning(
+                    "Extraction attempt %d failed for account %s: %s",
+                    attempt,
+                    acc.get("id"),
+                    e,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(5)
+
+        if not success:
+            logger.error("Failed to extract routine for account %s after retries.", acc.get("id"))
 
     if not all_entries:
         raise RuntimeError("No routine entries were successfully extracted from any account.")
+
+    # Guard: if the new extraction missed accounts, do not downgrade an existing complete file
+    if output_path.exists() and len(processed_accounts) < len(accounts):
+        try:
+            with open(output_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if len(existing.get("accounts_processed", [])) > len(processed_accounts):
+                logger.warning(
+                    "Partial extraction (%d/%d accounts)! Preserving existing full routine in '%s'.",
+                    len(processed_accounts),
+                    len(accounts),
+                    output_path,
+                )
+                return
+        except Exception:
+            pass
 
     # Deduplicate entries by (CourseCode, Day, TimeSlot, Section)
     unique_entries = []
