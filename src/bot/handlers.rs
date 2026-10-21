@@ -1275,20 +1275,23 @@ pub async fn handle_callback_query(
         }
     }
 
-    let card = match data {
-        "nav_today" => render_today_card(&sched, &state),
-        "nav_next" => render_next_card(&sched, &state),
-        "nav_tomorrow" => render_tomorrow_card(&sched),
-        "nav_routine" | "day_all" => render_routine_overview(&sched),
-        "nav_teachers" => render_teachers_directory(&sched),
-        "nav_free" => render_free_card(&sched, &state),
-        "day_sun" => render_routine_day(&sched, DayOfWeek::Sun),
-        "day_mon" => render_routine_day(&sched, DayOfWeek::Mon),
-        "day_tue" => render_routine_day(&sched, DayOfWeek::Tue),
-        "day_wed" => render_routine_day(&sched, DayOfWeek::Wed),
-        "day_thu" => render_routine_day(&sched, DayOfWeek::Thu),
+    let (card, toast) = match data {
+        "nav_today" => (render_today_card(&sched, &state), "📅 Today's Schedule"),
+        "nav_next" => (render_next_card(&sched, &state), "⏱️ Refreshing Next Class..."),
+        "nav_tomorrow" => (render_tomorrow_card(&sched), "🗓️ Tomorrow's Preview"),
+        "nav_routine" | "day_all" => (render_routine_overview(&sched), "📋 Routine Overview"),
+        "nav_teachers" => (render_teachers_directory(&sched), "📚 Faculty Directory"),
+        "nav_free" => (render_free_card(&sched, &state), "☕ Free Study Breaks"),
+        "day_sun" => (render_routine_day(&sched, DayOfWeek::Sun), "Sunday Routine"),
+        "day_mon" => (render_routine_day(&sched, DayOfWeek::Mon), "Monday Routine"),
+        "day_tue" => (render_routine_day(&sched, DayOfWeek::Tue), "Tuesday Routine"),
+        "day_wed" => (render_routine_day(&sched, DayOfWeek::Wed), "Wednesday Routine"),
+        "day_thu" => (render_routine_day(&sched, DayOfWeek::Thu), "Thursday Routine"),
         _ => return Ok(()),
     };
+
+    // Acknowledge callback immediately with toast feedback
+    let _ = bot.answer_callback_query(q.id).text(toast).await;
 
     let (text, markup) = card;
 
@@ -1311,7 +1314,6 @@ pub async fn handle_callback_query(
         }
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
     Ok(())
 }
 
