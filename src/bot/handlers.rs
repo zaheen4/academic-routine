@@ -1,15 +1,17 @@
 //! Telegram command handlers and interactive assistant logic.
 
+use crate::bot::keyboards::*;
 use crate::engine::parser::load_routine_file;
 use crate::exporters::ics::export_ics_file;
-use crate::model::day::{academic_now, current_academic_day, next_academic_day};
+use crate::model::course::{CourseEntry, TeacherContact};
+use crate::model::day::{academic_now, current_academic_day, next_academic_day, DayOfWeek};
 use crate::model::schedule::Schedule;
 use crate::model::state::RoutineState;
 use chrono::Timelike;
 use std::path::PathBuf;
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::{InputFile, ParseMode};
+use teloxide::types::{CallbackQuery, InlineKeyboardMarkup, InputFile, ParseMode};
 use teloxide::utils::command::BotCommands;
 
 /// 🎓 University Routine Assistant Commands:
@@ -30,6 +32,8 @@ pub enum Command {
     Free,
     /// List instructor directory with phone numbers and emails
     Teachers,
+    /// Search faculty directory by name, initials, or course (e.g. /teacher basar)
+    Teacher(String),
     /// View complete weekly routine timetable
     Routine,
     /// Show routine status, alert settings, and vacation mode
@@ -172,6 +176,451 @@ impl BotContext {
     }
 }
 
+/// Renders the Today schedule card with live badges and navigation buttons.
+#[must_use]
+pub fn render_today_card(
+    sched: &Schedule,
+    state: &RoutineState,
+) -> (String, InlineKeyboardMarkup) {
+    let today = current_academic_day();
+    let classes = sched.for_day(today);
+    let now = academic_now().time();
+
+    let vacation_banner = if state.is_vacation_active() {
+        "🏖️ <b>Vacation Mode Active (Semester Break)</b>\n<i>No official routine classes scheduled. Send /vacation off to resume normal alerts.</i>\n\n"
+    } else {
+        ""
+    };
+
+    if classes.is_empty() {
+        let text = format!(
+            "{vacation_banner}🎉 <b>No classes scheduled for today ({})!</b> Enjoy your free time.",
+            today.full_name()
+        );
+        return (text, today_keyboard());
+    }
+
+    let mut text = format!(
+        "{}📅 <b>Schedule for Today ({})</b> • {} classes\n───────────────────────────\n",
+        vacation_banner,
+        today.full_name(),
+        classes.len()
+    );
+
+    let next_class = classes.iter().find(|c| c.time_slot.start() > now);
+
+    for c in &classes {
+        let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+        let status_badge = if c.time_slot.contains_time(now) {
+            "  [IN SESSION 🟢]".to_string()
+        } else if Some(c) == next_class {
+            let mins = (c.time_slot.start().hour() * 60 + c.time_slot.start().minute())
+                .saturating_sub(now.hour() * 60 + now.minute());
+            format!("  [NEXT • {mins}m ⏳]")
+        } else if c.time_slot.end() < now {
+            "  [COMPLETED ⚪]".to_string()
+        } else {
+            String::new()
+        };
+
+        text.push_str(&format!(
+            "<code>{}</code> • <b>{}</b>{}\n<b>{}: {}</b>{}\n",
+            c.time_slot.format_12h(),
+            c.room,
+            status_badge,
+            c.code,
+            escape_html(&c.title),
+            lab_badge
+        ));
+        if !c.teacher.name.is_empty() {
+            text.push_str(&format!("👤 {}\n", escape_html(&c.teacher.name)));
+        }
+        text.push('\n');
+    }
+
+    text.push_str("───────────────────────────\n<i>💡 30-minute reminder notifications are active</i>");
+    (text, today_keyboard())
+}
+
+/// Renders the Next Class card with countdown and quick refresh buttons.
+#[must_use]
+pub fn render_next_card(
+    sched: &Schedule,
+    state: &RoutineState,
+) -> (String, InlineKeyboardMarkup) {
+    if state.is_vacation_active() {
+        let text = "🏖️ <b>Vacation Mode Active (Semester Break)</b>\nNo classes are currently scheduled. Send <code>/vacation off</code> when classes resume.".to_string();
+        return (text, next_keyboard());
+    }
+
+    let today = current_academic_day();
+    let now = academic_now().time();
+    let classes = sched.for_day(today);
+
+    if let Some(active) = classes.iter().find(|c| c.time_slot.contains_time(now)) {
+        let mins_left = (active.time_slot.end().hour() * 60 + active.time_slot.end().minute())
+            .saturating_sub(now.hour() * 60 + now.minute());
+        let lab_badge = if active.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+        let text = format!(
+            "🔴 <b>CURRENTLY IN SESSION</b>\n───────────────────────────\n\
+             <code>{}</code> (ends in <b>{} mins</b>)\n\n\
+             📖 <b>{}: {}</b>{}\n\
+             🏛️ Room: <code>{}</code>\n\
+             👤 Faculty: <i>{}</i>\n───────────────────────────",
+            active.time_slot.format_12h(),
+            mins_left,
+            active.code,
+            escape_html(&active.title),
+            lab_badge,
+            active.room,
+            escape_html(&active.teacher.name)
+        );
+        (text, next_keyboard())
+    } else if let Some(next) = classes.iter().find(|c| c.time_slot.start() > now) {
+        let mins_until = (next.time_slot.start().hour() * 60 + next.time_slot.start().minute())
+            .saturating_sub(now.hour() * 60 + now.minute());
+        let lab_badge = if next.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+        let text = format!(
+            "⏱️ <b>Next Upcoming Class</b>\n───────────────────────────\n\
+             ⏳ In <b>{} minutes</b> (starts at <code>{}</code>)\n\n\
+             📖 <b>{}: {}</b>{}\n\
+             🏛️ Room: <code>{}</code>\n\
+             👤 Faculty: <i>{}</i>\n───────────────────────────\n\
+             <i>Tap refresh to update live countdown</i>",
+            mins_until,
+            next.time_slot.start().format("%I:%M %p"),
+            next.code,
+            escape_html(&next.title),
+            lab_badge,
+            next.room,
+            escape_html(&next.teacher.name)
+        );
+        (text, next_keyboard())
+    } else {
+        let text = "🏁 <b>All classes for today have concluded!</b>\n───────────────────────────\nGood job! Send /tomorrow or tap below to preview upcoming days.".to_string();
+        (text, next_keyboard())
+    }
+}
+
+/// Renders the Tomorrow preview card.
+#[must_use]
+pub fn render_tomorrow_card(sched: &Schedule) -> (String, InlineKeyboardMarkup) {
+    let tomorrow = next_academic_day();
+    let classes = sched.for_day(tomorrow);
+
+    if classes.is_empty() {
+        let text = format!(
+            "🎉 <b>No classes scheduled for tomorrow ({})!</b> Have a restful evening.",
+            tomorrow.full_name()
+        );
+        return (text, today_keyboard());
+    }
+
+    let mut text = format!(
+        "🗓️ <b>Preview for Tomorrow ({})</b> • {} classes\n───────────────────────────\n",
+        tomorrow.full_name(),
+        classes.len()
+    );
+
+    for c in &classes {
+        let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+        text.push_str(&format!(
+            "<code>{}</code> • <b>{}</b>\n<b>{}: {}</b>{}\n",
+            c.time_slot.format_12h(),
+            c.room,
+            c.code,
+            escape_html(&c.title),
+            lab_badge
+        ));
+        if !c.teacher.name.is_empty() {
+            text.push_str(&format!("👤 {}\n", escape_html(&c.teacher.name)));
+        }
+        text.push('\n');
+    }
+
+    text.push_str("───────────────────────────\n<i>💡 Send /routine to view the full week</i>");
+    (text, today_keyboard())
+}
+
+/// Renders the compact weekly routine overview with emojiless day switcher buttons.
+#[must_use]
+pub fn render_routine_overview(sched: &Schedule) -> (String, InlineKeyboardMarkup) {
+    let mut text = format!(
+        "📋 <b>Weekly Academic Routine</b>\n\
+         <i>{} | {} classes total</i>\n\
+         ───────────────────────────\n",
+        escape_html(&sched.semester_name),
+        sched.entries.len()
+    );
+
+    for day in DayOfWeek::all() {
+        let day_classes = sched.for_day(*day);
+        if day_classes.is_empty() {
+            continue;
+        }
+
+        text.push_str(&format!(
+            "<b>{}</b> • {} classes\n",
+            day.full_name(),
+            day_classes.len()
+        ));
+        let count = day_classes.len();
+        for (idx, c) in day_classes.iter().enumerate() {
+            let branch = if idx == count - 1 { "└" } else { "├" };
+            let lab_badge = if c.is_lab() { " 🔬" } else { "" };
+            text.push_str(&format!(
+                "{} <code>{}</code> <b>{}</b>: {}{}\n",
+                branch,
+                c.time_slot.format_12h(),
+                c.room,
+                c.code,
+                lab_badge
+            ));
+        }
+        text.push('\n');
+    }
+
+    text.push_str("───────────────────────────\n<i>Tap any day below to expand full instructor and room details:</i>");
+    (text, routine_days_keyboard(None))
+}
+
+/// Renders a single day's routine expanded with full instructor and room details.
+#[must_use]
+pub fn render_routine_day(sched: &Schedule, day: DayOfWeek) -> (String, InlineKeyboardMarkup) {
+    let classes = sched.for_day(day);
+    if classes.is_empty() {
+        let text = format!(
+            "📋 <b>Schedule for {}</b>\n───────────────────────────\nNo classes scheduled on this day! Enjoy your break.",
+            day.full_name()
+        );
+        return (text, routine_days_keyboard(Some(day)));
+    }
+
+    let mut text = format!(
+        "📋 <b>Schedule for {}</b> • {} classes\n───────────────────────────\n",
+        day.full_name(),
+        classes.len()
+    );
+
+    for c in &classes {
+        let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+        text.push_str(&format!(
+            "<code>{}</code> • Room <b>{}</b>\n<b>{}: {}</b>{}\n",
+            c.time_slot.format_12h(),
+            c.room,
+            c.code,
+            escape_html(&c.title),
+            lab_badge
+        ));
+        if !c.teacher.name.is_empty() {
+            text.push_str(&format!("👤 {}\n", escape_html(&c.teacher.name)));
+        }
+        text.push('\n');
+    }
+
+    text.push_str("───────────────────────────\n<i>Tap another day to switch views:</i>");
+    (text, routine_days_keyboard(Some(day)))
+}
+
+/// Renders the faculty directory card.
+#[must_use]
+pub fn render_teachers_directory(sched: &Schedule) -> (String, InlineKeyboardMarkup) {
+    let dir = sched.teacher_directory();
+    let mut text = format!(
+        "📚 <b>Faculty Directory</b> ({} Instructors)\n───────────────────────────\n",
+        dir.len()
+    );
+    for (name, contact) in dir {
+        text.push_str(&format!("• <b>{}</b>\n", escape_html(&name)));
+        if let Some(ref p) = contact.phone {
+            text.push_str(&format!("  📞 Phone: <code>{}</code>\n", escape_html(p)));
+        }
+        if let Some(ref e) = contact.email {
+            text.push_str(&format!("  ✉️ Email: <code>{}</code>\n", escape_html(e)));
+        }
+        text.push('\n');
+    }
+    text.push_str("───────────────────────────\n<i>💡 Search any instructor with <code>/teacher &lt;name&gt;</code></i>");
+    (text, today_keyboard())
+}
+
+/// Renders an individual faculty profile card with 1-tap call/email buttons.
+#[must_use]
+pub fn render_teacher_profile(
+    name: &str,
+    contact: &TeacherContact,
+    courses: &[&CourseEntry],
+) -> (String, InlineKeyboardMarkup) {
+    let mut text = format!(
+        "👤 <b>Faculty Profile: {}</b>\n───────────────────────────\n",
+        escape_html(name)
+    );
+    if let Some(ref p) = contact.phone {
+        text.push_str(&format!("📞 <b>Phone:</b> <code>{}</code>\n", escape_html(p)));
+    }
+    if let Some(ref e) = contact.email {
+        text.push_str(&format!("✉️ <b>Email:</b> <code>{}</code>\n", escape_html(e)));
+    }
+
+    if !courses.is_empty() {
+        text.push_str("\n📖 <b>Courses Taught:</b>\n");
+        for c in courses {
+            let lab_badge = if c.is_lab() { " 🔬" } else { "" };
+            text.push_str(&format!(
+                "• <code>{}</code>: {}{}\n  └ {} {} (Room {})\n",
+                c.code,
+                escape_html(&c.title),
+                lab_badge,
+                c.day.full_name(),
+                c.time_slot.format_12h(),
+                c.room
+            ));
+        }
+    }
+    text.push_str("───────────────────────────");
+
+    let markup = teacher_contact_keyboard(contact.phone.as_deref(), contact.email.as_deref());
+    (text, markup)
+}
+
+/// Renders today's break and study windows card.
+#[must_use]
+pub fn render_free_card(
+    sched: &Schedule,
+    state: &RoutineState,
+) -> (String, InlineKeyboardMarkup) {
+    let today = current_academic_day();
+    let classes = sched.for_day(today);
+
+    let vacation_banner = if state.is_vacation_active() {
+        "🏖️ <b>Vacation Mode Active (Semester Break)</b>\n<i>All hours are currently free time!</i>\n\n"
+    } else {
+        ""
+    };
+
+    if classes.len() < 2 {
+        let text = format!(
+            "{vacation_banner}🎉 <b>No mid-day gaps today ({})!</b>\n\
+             You have either a completely free day or only a single continuous class block.",
+            today.full_name()
+        );
+        return (text, today_keyboard());
+    }
+
+    let mut breaks = Vec::new();
+    for i in 0..classes.len() - 1 {
+        let current = &classes[i];
+        let next = &classes[i + 1];
+        if let Some(gap_mins) = current.time_slot.gap_between(&next.time_slot) {
+            if gap_mins > 0 {
+                let note = if gap_mins >= 60 {
+                    "🥪 Lunch / Major Study Break"
+                } else if gap_mins >= 30 {
+                    "☕ Break Window"
+                } else {
+                    "🚶 Class Transition Window"
+                };
+                breaks.push((
+                    current.time_slot.end().format("%I:%M %p").to_string(),
+                    next.time_slot.start().format("%I:%M %p").to_string(),
+                    gap_mins,
+                    note,
+                ));
+            }
+        }
+    }
+
+    if breaks.is_empty() {
+        let text = format!(
+            "☕ <b>No breaks scheduled between classes today ({})</b>\nClasses run back-to-back.",
+            today.full_name()
+        );
+        return (text, today_keyboard());
+    }
+
+    let mut text = format!(
+        "{}☕ <b>Free Breaks Today ({})</b>\n───────────────────────────\n",
+        vacation_banner,
+        today.full_name()
+    );
+
+    for (start, end, mins, note) in &breaks {
+        text.push_str(&format!(
+            "• <code>{} – {}</code> (<b>{} mins</b>)\n  {}\n\n",
+            start, end, mins, note
+        ));
+    }
+
+    text.push_str(&format!(
+        "───────────────────────────\n<i>💡 {} study break(s) available between your classes</i>",
+        breaks.len()
+    ));
+
+    (text, today_keyboard())
+}
+
+/// Renders the subsystem status card.
+#[must_use]
+pub fn render_status_card(
+    sched: &Schedule,
+    state: &RoutineState,
+    chat_id: ChatId,
+) -> (String, InlineKeyboardMarkup) {
+    let user_display = state
+        .telegram_username
+        .as_deref()
+        .map(|u| format!("{u} [Chat {chat_id}]"))
+        .unwrap_or_else(|| format!("Chat {chat_id}"));
+
+    let vacation_str = if state.is_vacation_active() {
+        if let Some(ref until) = state.vacation_until {
+            format!("🏖️ <b>ACTIVE</b> (until {until})")
+        } else {
+            "🏖️ <b>ACTIVE</b> (Semester Break)".to_string()
+        }
+    } else {
+        "<b>INACTIVE</b> (Normal Semester)".to_string()
+    };
+
+    let alerts_str = if state.morning_alerts {
+        format!("🔔 <b>ENABLED</b> (06:00 AM to {user_display})")
+    } else {
+        "🔕 <b>PAUSED</b> (/alerts on to resume)".to_string()
+    };
+
+    let completed_count = state.dropped_courses.len();
+    let gist_status = if let Some(ref gid) = state.gist_id {
+        let short = &gid[..8.min(gid.len())];
+        format!("Linked (<code>{short}...</code>)")
+    } else {
+        "Not linked".to_string()
+    };
+
+    let sheet_name = std::env::var("SPREADSHEET_NAME")
+        .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
+
+    let text = format!(
+        "🎓 <b>Academic Routine Assistant Status</b>\n───────────────────────────\n\
+         📁 <b>Semester:</b> <code>{}</code>\n\
+         🛡️ <b>Courses:</b> {} active ({} completed)\n\
+         🏖️ <b>Vacation:</b> {}\n\
+         🔔 <b>Morning Alerts:</b> {}\n───────────────────────────\n\
+         🔗 <b>Gist Feed:</b> {}\n\
+         📊 <b>Google Sheets:</b> <code>{}</code>\n\
+         🤖 <b>Bot Daemon:</b> Online &amp; Listening\n───────────────────────────\n\
+         <i>💡 Tap a button below or send /alerts, /vacation to adjust.</i>",
+        escape_html(&sched.semester_name),
+        sched.entries.len(),
+        completed_count,
+        vacation_str,
+        alerts_str,
+        gist_status,
+        escape_html(&sheet_name),
+    );
+
+    (text, main_menu_keyboard())
+}
+
 /// Dispatches an incoming Telegram command using reliable HTML formatting.
 pub async fn handle_command(
     bot: Bot,
@@ -197,27 +646,29 @@ pub async fn handle_command(
 
     match cmd {
         Command::Help | Command::Start => {
-            let help_text = format!(
-                "🎓 <b>Welcome to your Academic Routine Assistant!</b>\n\n\
-                 {}\n\n\
-                 💡 <b>Quick Tips:</b>\n\
-                 • Send <code>/today</code> to see your schedule for today.\n\
-                 • Send <code>/next</code> to see what class is coming up next.\n\
-                 • Send <code>/routine</code> to view the entire weekly timetable.\n\
-                 • Send <code>/tomorrow</code> to preview tomorrow's classes.\n\
-                 • Send <code>/status</code> to check system health, alerts, and vacation mode.\n\
-                 • Send <code>/complete &lt;CODE&gt;</code> when a course syllabus is done.\n\
-                 • Send <code>/alerts off</code> to pause 6:00 AM morning briefings.\n\
-                 • Send <code>/vacation on</code> during semester breaks.",
-                escape_html(&Command::descriptions().to_string())
-            );
+            let help_text = "🎓 <b>Academic Routine Assistant</b>\n\
+                 <i>Autonomous timetable, reminder &amp; calendar assistant</i>\n\
+                 ───────────────────────────\n\
+                 <b>Quick Navigation:</b>\n\
+                 Tap any button below or send a command:\n\n\
+                 • <code>/today</code> — Today's classes &amp; live status\n\
+                 • <code>/next</code> — Upcoming class with countdown\n\
+                 • <code>/routine</code> — Full weekly timetable &amp; day switcher\n\
+                 • <code>/teacher &lt;name&gt;</code> — Search faculty &amp; 1-tap call/email\n\
+                 • <code>/free</code> — Study &amp; break windows\n\
+                 • <code>/status</code> — System health &amp; alert status\n\
+                 • <code>/calendar</code> — 1-tap mobile calendar import\n\
+                 ───────────────────────────\n\
+                 <i>💡 30-minute pre-class reminders are active in the background.</i>";
+
             bot.send_message(chat_id, help_text)
                 .parse_mode(ParseMode::Html)
+                .reply_markup(main_menu_keyboard())
                 .await?;
         }
 
         Command::Status => {
-            let (sched, mut state) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule() {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -225,66 +676,15 @@ pub async fn handle_command(
                 }
             };
 
-            let user_display = state
-                .telegram_username
-                .as_deref()
-                .map(|u| format!("{u} [Chat {chat_id}]"))
-                .unwrap_or_else(|| format!("Chat {chat_id}"));
-
-            let vacation_str = if state.is_vacation_active() {
-                if let Some(until) = state.vacation_until {
-                    format!("🏖️ <b>ACTIVE</b> (until {until})")
-                } else {
-                    "🏖️ <b>ACTIVE</b> (Semester Break)".to_string()
-                }
-            } else {
-                "<b>INACTIVE</b> (Normal Semester)".to_string()
-            };
-
-            let alerts_str = if state.morning_alerts {
-                format!("🔔 <b>ENABLED</b> (06:00 AM to {user_display})")
-            } else {
-                "🔕 <b>PAUSED</b> (/alerts on to resume)".to_string()
-            };
-
-            let completed_count = state.dropped_courses.len();
-            let gist_status = if let Some(ref gid) = state.gist_id {
-                let short = &gid[..8.min(gid.len())];
-                format!("Linked (<code>{short}...</code>)")
-            } else {
-                "Not linked".to_string()
-            };
-
-            let sheet_name = std::env::var("SPREADSHEET_NAME")
-                .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
-
-            let text = format!(
-                "🎓 <b>Academic Routine Assistant Status</b>\n\n\
-                 📁 <b>Semester:</b> <code>{}</code>\n\
-                 🛡️ <b>Courses:</b> {} active ({} completed)\n\
-                 🏖️ <b>Vacation:</b> {}\n\
-                 🔔 <b>Morning Alerts:</b> {}\n\n\
-                 <b>--- Integrations ---</b>\n\
-                 🔗 <b>Gist Feed:</b> {}\n\
-                 📊 <b>Google Sheets:</b> <code>{}</code>\n\
-                 🤖 <b>Bot Daemon:</b> Online &amp; Listening\n\n\
-                 <i>💡 Send /alerts, /vacation, or /complete anytime to adjust.</i>",
-                escape_html(&sched.semester_name),
-                sched.entries.len(),
-                completed_count,
-                vacation_str,
-                alerts_str,
-                gist_status,
-                escape_html(&sheet_name),
-            );
-
+            let (text, markup) = render_status_card(&sched, &state, chat_id);
             bot.send_message(chat_id, text)
                 .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
                 .await?;
         }
 
         Command::Today => {
-            let (sched, mut state) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule() {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -292,58 +692,15 @@ pub async fn handle_command(
                 }
             };
 
-            let today = current_academic_day();
-            let classes = sched.for_day(today);
-
-            let vacation_banner = if state.is_vacation_active() {
-                "🏖️ <b>Vacation Mode Active (Semester Break)</b>\n<i>No official routine classes scheduled. Send /vacation off to resume normal alerts.</i>\n\n"
-            } else {
-                ""
-            };
-
-            if classes.is_empty() {
-                bot.send_message(
-                    chat_id,
-                    format!(
-                        "{vacation_banner}🎉 No classes scheduled for today ({})! Enjoy your free time.",
-                        today.full_name()
-                    ),
-                )
-                .parse_mode(ParseMode::Html)
-                .await?;
-                return Ok(());
-            }
-
-            let mut text = format!(
-                "{}📅 <b>Schedule for Today ({})</b> — {} class(es)\n\n",
-                vacation_banner,
-                today.full_name(),
-                classes.len()
-            );
-
-            for c in classes {
-                let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
-                text.push_str(&format!(
-                    "• <b>{}</b> | Room <b>{}</b>\n  └ <code>{}</code>: <b>{}</b>{}\n",
-                    c.time_slot.format_12h(),
-                    c.room,
-                    c.code,
-                    escape_html(&c.title),
-                    lab_badge
-                ));
-                if !c.teacher.name.is_empty() {
-                    text.push_str(&format!("    👤 {}\n", escape_html(&c.teacher.name)));
-                }
-                text.push('\n');
-            }
-
+            let (text, markup) = render_today_card(&sched, &state);
             bot.send_message(chat_id, text)
                 .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
                 .await?;
         }
 
         Command::Next => {
-            let (sched, mut state) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule() {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -351,67 +708,11 @@ pub async fn handle_command(
                 }
             };
 
-            if state.is_vacation_active() {
-                bot.send_message(
-                    chat_id,
-                    "🏖️ <b>Vacation Mode Active (Semester Break)</b>\nNo classes are currently scheduled. Send <code>/vacation off</code> when classes resume.",
-                )
+            let (text, markup) = render_next_card(&sched, &state);
+            bot.send_message(chat_id, text)
                 .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
                 .await?;
-                return Ok(());
-            }
-
-            let today = current_academic_day();
-            let now = academic_now().time();
-            let classes = sched.for_day(today);
-
-            if let Some(active) = classes.iter().find(|c| c.time_slot.contains_time(now)) {
-                let mins_left = (active.time_slot.end().hour() * 60
-                    + active.time_slot.end().minute())
-                .saturating_sub(now.hour() * 60 + now.minute());
-                let msg_text = format!(
-                    "🔴 <b>CURRENTLY IN SESSION</b>\n\n\
-                     • Course: <b>{}</b> ({})\n\
-                     • Room: <b>Room {}</b>\n\
-                     • Time: <b>{}</b> (ends in {} mins)\n\
-                     • Teacher: {}",
-                    active.code,
-                    escape_html(&active.title),
-                    active.room,
-                    active.time_slot.format_12h(),
-                    mins_left,
-                    escape_html(&active.teacher.name)
-                );
-                bot.send_message(chat_id, msg_text)
-                    .parse_mode(ParseMode::Html)
-                    .await?;
-            } else if let Some(next) = classes.iter().find(|c| c.time_slot.start() > now) {
-                let mins_until = (next.time_slot.start().hour() * 60
-                    + next.time_slot.start().minute())
-                .saturating_sub(now.hour() * 60 + now.minute());
-                let msg_text = format!(
-                    "🟢 <b>NEXT UPCOMING CLASS</b>\n\n\
-                     • Course: <b>{}</b> ({})\n\
-                     • Room: <b>Room {}</b>\n\
-                     • Time: <b>{}</b> (starts in {} mins)\n\
-                     • Teacher: {}",
-                    next.code,
-                    escape_html(&next.title),
-                    next.room,
-                    next.time_slot.format_12h(),
-                    mins_until,
-                    escape_html(&next.teacher.name)
-                );
-                bot.send_message(chat_id, msg_text)
-                    .parse_mode(ParseMode::Html)
-                    .await?;
-            } else {
-                bot.send_message(
-                    chat_id,
-                    "🏁 All classes for today have concluded! Good job.",
-                )
-                .await?;
-            }
         }
 
         Command::Tomorrow => {
@@ -423,46 +724,15 @@ pub async fn handle_command(
                 }
             };
 
-            let tomorrow = next_academic_day();
-            let classes = sched.for_day(tomorrow);
-
-            if classes.is_empty() {
-                bot.send_message(
-                    chat_id,
-                    format!(
-                        "🎉 No classes scheduled for tomorrow ({})! Have a restful evening.",
-                        tomorrow.full_name()
-                    ),
-                )
-                .await?;
-                return Ok(());
-            }
-
-            let mut text = format!(
-                "🌅 <b>Preview for Tomorrow ({})</b> — {} class(es)\n\n",
-                tomorrow.full_name(),
-                classes.len()
-            );
-
-            for c in classes {
-                let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
-                text.push_str(&format!(
-                    "• <b>{}</b> | Room <b>{}</b>\n  └ <code>{}</code>: <b>{}</b>{}\n",
-                    c.time_slot.format_12h(),
-                    c.room,
-                    c.code,
-                    escape_html(&c.title),
-                    lab_badge
-                ));
-            }
-
+            let (text, markup) = render_tomorrow_card(&sched);
             bot.send_message(chat_id, text)
                 .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
                 .await?;
         }
 
         Command::Free => {
-            let (sched, _) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule() {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -470,64 +740,11 @@ pub async fn handle_command(
                 }
             };
 
-            let today = current_academic_day();
-            let classes = sched.for_day(today);
-
-            if classes.len() < 2 {
-                bot.send_message(
-                    chat_id,
-                    "ℹ️ You have fewer than 2 classes today, so no in-between breaks exist.",
-                )
+            let (text, markup) = render_free_card(&sched, &state);
+            bot.send_message(chat_id, text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
                 .await?;
-                return Ok(());
-            }
-
-            let mut breaks = Vec::new();
-            for i in 0..classes.len() - 1 {
-                let cur = classes[i];
-                let next = classes[i + 1];
-                if let Some(gap) = cur.time_slot.gap_between(&next.time_slot) {
-                    if gap > 0 {
-                        let hours = gap / 60;
-                        let mins = gap % 60;
-                        let duration_str = if hours > 0 && mins > 0 {
-                            format!("{hours}h {mins}m")
-                        } else if hours > 0 {
-                            format!("{hours} hour(s)")
-                        } else {
-                            format!("{mins} min(s)")
-                        };
-
-                        breaks.push(format!(
-                            "☕ <b>{}</b> ({} to {})\n   Between <code>{}</code> and <code>{}</code>",
-                            duration_str,
-                            cur.time_slot.end().format("%I:%M %p"),
-                            next.time_slot.start().format("%I:%M %p"),
-                            cur.code,
-                            next.code
-                        ));
-                    }
-                }
-            }
-
-            if breaks.is_empty() {
-                bot.send_message(
-                    chat_id,
-                    "ℹ️ All classes today are back-to-back with no breaks in between.",
-                )
-                .await?;
-            } else {
-                let mut text = format!(
-                    "☕ <b>Break Windows for Today ({})</b>:\n\n",
-                    today.full_name()
-                );
-                for b in breaks {
-                    text.push_str(&format!("• {b}\n\n"));
-                }
-                bot.send_message(chat_id, text)
-                    .parse_mode(ParseMode::Html)
-                    .await?;
-            }
         }
 
         Command::Teachers => {
@@ -539,25 +756,83 @@ pub async fn handle_command(
                 }
             };
 
-            let dir = sched.teacher_directory();
-            let mut text = format!(
-                "📚 <b>Instructor Directory</b> ({} teachers):\n\n",
-                dir.len()
-            );
-            for (name, contact) in dir {
-                text.push_str(&format!("• <b>{}</b>\n", escape_html(&name)));
-                if let Some(ref p) = contact.phone {
-                    text.push_str(&format!("  ☎ Phone: <code>{}</code>\n", escape_html(p)));
-                }
-                if let Some(ref e) = contact.email {
-                    text.push_str(&format!("  ✉ Email: <code>{}</code>\n", escape_html(e)));
-                }
-                text.push('\n');
-            }
-
+            let (text, markup) = render_teachers_directory(&sched);
             bot.send_message(chat_id, text)
                 .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
                 .await?;
+        }
+
+        Command::Teacher(ref query) => {
+            let (sched, _) = match ctx.load_active_schedule() {
+                Ok(res) => res,
+                Err(e) => {
+                    bot.send_message(chat_id, format!("❌ {e}")).await?;
+                    return Ok(());
+                }
+            };
+
+            let q = query.trim();
+            if q.is_empty() {
+                let help_text = "🔍 <b>Faculty Directory Search</b>\n\
+                    ───────────────────────────\n\
+                    Search any instructor by name, initials, or course code:\n\n\
+                    • <code>/teacher basar</code>\n\
+                    • <code>/teacher SS</code>\n\
+                    • <code>/teacher CSE-4125</code>\n\
+                    ───────────────────────────\n\
+                    <i>Tap below to view the entire faculty directory:</i>";
+                bot.send_message(chat_id, help_text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(teacher_contact_keyboard(None, None))
+                    .await?;
+                return Ok(());
+            }
+
+            let matches = sched.find_teachers(q);
+            if matches.is_empty() {
+                let text = format!(
+                    "🔍 No faculty found matching \"<b>{}</b>\".\n\n\
+                     <i>Tip: Check spelling or search by course code (e.g. <code>/teacher 4125</code>).</i>",
+                    escape_html(q)
+                );
+                bot.send_message(chat_id, text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(teacher_contact_keyboard(None, None))
+                    .await?;
+                return Ok(());
+            }
+
+            if matches.len() == 1 {
+                let (name, contact, courses) = &matches[0];
+                let (text, markup) = render_teacher_profile(name, contact, courses);
+                bot.send_message(chat_id, text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(markup)
+                    .await?;
+            } else {
+                let mut text = format!(
+                    "🔍 Found <b>{}</b> faculty matching \"<b>{}</b>\":\n───────────────────────────\n",
+                    matches.len(),
+                    escape_html(q)
+                );
+                for (name, contact, courses) in &matches {
+                    let phone_str = contact.phone.as_deref().unwrap_or("No phone");
+                    let email_str = contact.email.as_deref().unwrap_or("No email");
+                    text.push_str(&format!(
+                        "• <b>{}</b> ({} classes)\n  📞 <code>{}</code> • ✉️ <code>{}</code>\n",
+                        escape_html(name),
+                        courses.len(),
+                        phone_str,
+                        email_str
+                    ));
+                }
+                text.push_str("───────────────────────────\n<i>Tip: Refine your search to open direct call/email action buttons.</i>");
+                bot.send_message(chat_id, text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(teacher_contact_keyboard(None, None))
+                    .await?;
+            }
         }
 
         Command::Complete(code) | Command::Finish(code) | Command::Drop(code) => {
@@ -689,42 +964,10 @@ pub async fn handle_command(
                 }
             };
 
-            let mut text = format!(
-                "📅 <b>Complete Weekly Academic Routine</b>\n\
-                 <i>Semester: {} | {} classes total</i>\n\n",
-                escape_html(&sched.semester_name),
-                sched.entries.len()
-            );
-
-            for day in crate::model::day::DayOfWeek::all() {
-                let day_classes = sched.for_day(*day);
-                if day_classes.is_empty() {
-                    continue;
-                }
-
-                text.push_str(&format!(
-                    "🗓️ <b>{}</b> ({} classes):\n",
-                    day.full_name(),
-                    day_classes.len()
-                ));
-                for c in day_classes {
-                    let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
-                    text.push_str(&format!(
-                        "• <b>{}</b> | Room <b>{}</b>\n  └ <code>{}</code>: <b>{}</b>{}\n",
-                        c.time_slot.format_12h(),
-                        c.room,
-                        c.code,
-                        escape_html(&c.title),
-                        lab_badge
-                    ));
-                }
-                text.push('\n');
-            }
-
-            text.push_str("💡 <i>Send /today or /next for daily tracking.</i>");
-
+            let (text, markup) = render_routine_overview(&sched);
             bot.send_message(chat_id, text)
                 .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
                 .await?;
         }
 
@@ -975,6 +1218,100 @@ pub async fn handle_command(
         }
     }
 
+    Ok(())
+}
+
+/// Handles interactive inline keyboard button callbacks.
+pub async fn handle_callback_query(
+    bot: Bot,
+    q: CallbackQuery,
+    ctx: Arc<BotContext>,
+) -> ResponseResult<()> {
+    let data = match q.data.as_deref() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+
+    let (sched, state) = match ctx.load_active_schedule() {
+        Ok(res) => res,
+        Err(e) => {
+            let _ = bot
+                .answer_callback_query(q.id.clone())
+                .text(format!("❌ Error: {e}"))
+                .show_alert(true)
+                .await;
+            return Ok(());
+        }
+    };
+
+    // Calendar download sends the file directly to the chat
+    if data == "nav_calendar" {
+        if let Some(msg) = &q.message {
+            let chat_id = msg.chat().id;
+            let ics_path = ctx.resolve_ics_path();
+            if let Some(parent) = ics_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = export_ics_file(&sched, &ics_path, state.semester_end_date) {
+                let _ = bot
+                    .answer_callback_query(q.id.clone())
+                    .text(format!("❌ Failed: {e}"))
+                    .show_alert(true)
+                    .await;
+                return Ok(());
+            }
+
+            let _ = bot
+                .answer_callback_query(q.id.clone())
+                .text("📥 Sending calendar file...")
+                .await;
+
+            let _ = bot
+                .send_document(chat_id, InputFile::file(&ics_path))
+                .caption("📅 <b>Your University Class Schedule (.ics)</b>\n\nTap to import all classes and 30-minute alarms into Apple Calendar or Google Calendar.")
+                .parse_mode(ParseMode::Html)
+                .await;
+            return Ok(());
+        }
+    }
+
+    let card = match data {
+        "nav_today" => render_today_card(&sched, &state),
+        "nav_next" => render_next_card(&sched, &state),
+        "nav_tomorrow" => render_tomorrow_card(&sched),
+        "nav_routine" | "day_all" => render_routine_overview(&sched),
+        "nav_teachers" => render_teachers_directory(&sched),
+        "nav_free" => render_free_card(&sched, &state),
+        "day_sun" => render_routine_day(&sched, DayOfWeek::Sun),
+        "day_mon" => render_routine_day(&sched, DayOfWeek::Mon),
+        "day_tue" => render_routine_day(&sched, DayOfWeek::Tue),
+        "day_wed" => render_routine_day(&sched, DayOfWeek::Wed),
+        "day_thu" => render_routine_day(&sched, DayOfWeek::Thu),
+        _ => return Ok(()),
+    };
+
+    let (text, markup) = card;
+
+    if let Some(msg) = &q.message {
+        let chat_id = msg.chat().id;
+        let message_id = msg.id();
+
+        let edit_res = bot
+            .edit_message_text(chat_id, message_id, text)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(markup)
+            .await;
+
+        if let Err(ref e) = edit_res {
+            let err_str = e.to_string();
+            // If the content is identical (e.g. rapid refresh), ignore the error
+            if !err_str.contains("message is not modified") {
+                eprintln!("⚠️ Failed to update message in-place: {err_str}");
+            }
+        }
+    }
+
+    let _ = bot.answer_callback_query(q.id).await;
     Ok(())
 }
 

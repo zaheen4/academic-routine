@@ -42,6 +42,15 @@ pub enum Commands {
     /// Show the immediate next upcoming class or active session
     Next,
 
+    /// Search faculty directory by name, initials, or course code
+    Teacher {
+        /// Instructor name, initials, or course code to query
+        query: Option<String>,
+    },
+
+    /// List all faculty members in the instructor directory
+    Teachers,
+
     /// Scan schedule for time overlaps and room double-bookings
     Conflicts,
 
@@ -146,9 +155,6 @@ pub enum Commands {
         #[arg(long)]
         no_http: bool,
     },
-
-    /// Display teacher directory with phone numbers and emails
-    Teachers,
 
     /// Synchronize routine data directly to Google Spreadsheet (CSE-03_B_ClassRoutine)
     SyncGsheet {

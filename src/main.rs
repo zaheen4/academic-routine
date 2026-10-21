@@ -1,7 +1,7 @@
 use academic_routine::cli::{Cli, Commands};
 use academic_routine::{
     academic_now, current_academic_day, export_ics_file, load_routine_file, render_day_table,
-    render_today_card, render_weekly_overview, DayOfWeek, RoutineState,
+    render_teacher_card, render_today_card, render_weekly_overview, DayOfWeek, RoutineState,
 };
 use chrono::Timelike;
 use clap::Parser;
@@ -145,9 +145,9 @@ async fn main() {
             return;
         }
         Some(Commands::Status) => {
-            println!("============================================================");
-            println!("              🎓 Academic Routine Subsystem Status          ");
-            println!("============================================================");
+            println!("┌──────────────────────────────────────────────────────────────┐");
+            println!("│             🎓 Academic Routine Subsystem Status             │");
+            println!("├──────────────────────────────────────────────────────────────┤");
 
             let routine_opt = resolve_routine_path(cli.file.as_ref());
             match routine_opt {
@@ -156,31 +156,31 @@ async fn main() {
                         let completed_count = state.dropped_courses.len();
                         let active_count = raw.filter_active(&state.dropped_courses).entries.len();
                         println!(
-                            "📁 Routine Data       : {} ({}, {} total classes)",
+                            "│ 📁 Routine Data       : {} ({}, {} total classes)",
                             p.display().to_string().cyan(),
                             raw.semester_name.yellow().bold(),
                             raw.entries.len()
                         );
                         println!(
-                            "🛡️ Courses Active     : {} ongoing ({} completed)",
+                            "│ 🛡️ Courses Active     : {} ongoing ({} completed)",
                             active_count.to_string().green().bold(),
                             completed_count.to_string().cyan()
                         );
                     } else {
-                        println!("📁 Routine Data       : {} (Parse Error)", p.display().to_string().red());
+                        println!("│ 📁 Routine Data       : {} (Parse Error)", p.display().to_string().red());
                     }
                 }
-                None => println!("📁 Routine Data       : {}", "None found".red()),
+                None => println!("│ 📁 Routine Data       : {}", "None found".red()),
             }
 
             if state.is_vacation_active() {
                 if let Some(until) = state.vacation_until {
-                    println!("🏖️ Vacation Mode      : {} (until {})", "ACTIVE".yellow().bold(), until);
+                    println!("│ 🏖️ Vacation Mode      : {} (until {})", "ACTIVE".yellow().bold(), until);
                 } else {
-                    println!("🏖️ Vacation Mode      : {}", "ACTIVE (Semester Break)".yellow().bold());
+                    println!("│ 🏖️ Vacation Mode      : {}", "ACTIVE (Semester Break)".yellow().bold());
                 }
             } else {
-                println!("🏖️ Vacation Mode      : {}", "INACTIVE (Semester classes ongoing)".green());
+                println!("│ 🏖️ Vacation Mode      : {}", "INACTIVE (Semester classes ongoing)".green());
             }
 
             let chat_id_str = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_else(|_| "Not configured".to_string());
@@ -190,32 +190,32 @@ async fn main() {
                 .map(|u| format!("{u} [Chat {chat_id_str}]"))
                 .unwrap_or_else(|| format!("Chat {chat_id_str}"));
             if state.morning_alerts {
-                println!("🔔 Morning Alerts     : {} (06:00 AM to {})", "ENABLED".green().bold(), user_info.cyan());
+                println!("│ 🔔 Morning Alerts     : {} (06:00 AM to {})", "ENABLED".green().bold(), user_info.cyan());
             } else {
-                println!("🔕 Morning Alerts     : {}", "PAUSED".yellow().bold());
+                println!("│ 🔕 Morning Alerts     : {}", "PAUSED".yellow().bold());
             }
 
-            println!("\n--- Subsystems & Integrations ---");
-            println!("🖥️  Offline CLI       : {}", "READY".green().bold());
+            println!("├──────────────────────────────────────────────────────────────┤");
+            println!("│ 🖥️  Offline CLI       : {}", "READY".green().bold());
 
             let ics_path = resolve_ics_path();
             if ics_path.exists() {
-                println!("📅 Calendar (.ics)    : {} ({})", "GENERATED".green().bold(), ics_path.display().to_string().cyan());
+                println!("│ 📅 Calendar (.ics)    : {} ({})", "GENERATED".green().bold(), ics_path.display().to_string().cyan());
             } else {
-                println!("📅 Calendar (.ics)    : {}", "Not yet generated (run export)".yellow());
+                println!("│ 📅 Calendar (.ics)    : {}", "Not yet generated (run export)".yellow());
             }
 
             if let Some(ref gid) = state.gist_id {
                 let status_str = if state.auto_sync_gist { "ACTIVE".green().bold() } else { "PAUSED".yellow().bold() };
-                println!("🔗 GitHub Gist Feed   : {} ({gid})", status_str);
+                println!("│ 🔗 GitHub Gist Feed   : {} ({gid})", status_str);
             } else {
-                println!("🔗 GitHub Gist Feed   : {}", "Not linked (set-gist <ID>)".yellow());
+                println!("│ 🔗 GitHub Gist Feed   : {}", "Not linked (set-gist <ID>)".yellow());
             }
 
             let sheet_name = std::env::var("SPREADSHEET_NAME")
                 .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
             let status_sheet = if state.auto_sync_gsheet { "ACTIVE".green().bold() } else { "PAUSED".yellow().bold() };
-            println!("📊 Google Sheets Sync : {} ({sheet_name})", status_sheet);
+            println!("│ 📊 Google Sheets Sync : {} ({sheet_name})", status_sheet);
 
             let timer_active = std::process::Command::new("systemctl")
                 .args(["--user", "is-active", "academic-routine-sync.timer"])
@@ -223,13 +223,13 @@ async fn main() {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
                 .unwrap_or(false);
             if timer_active {
-                println!("⏱️ Weekly Auto-Timer : {} (Saturday 20:00:00)", "ACTIVE".green().bold());
+                println!("│ ⏱️ Weekly Auto-Timer : {} (Saturday 20:00:00)", "ACTIVE".green().bold());
             } else {
-                println!("⏱️ Weekly Auto-Timer : {}", "INACTIVE / PAUSED".yellow().bold());
+                println!("│ ⏱️ Weekly Auto-Timer : {}", "INACTIVE / PAUSED".yellow().bold());
             }
 
-            println!("🤖 Telegram Bot       : {}", "ONLINE (Local daemon / Render suspended)".green().bold());
-            println!("============================================================");
+            println!("│ 🤖 Telegram Bot       : {}", "ONLINE (Local daemon)".green().bold());
+            println!("└──────────────────────────────────────────────────────────────┘");
             return;
         }
         Some(Commands::Vacation { action, until }) => {
@@ -684,6 +684,34 @@ async fn main() {
                 );
                 for c in &conflicts {
                     println!("   • [{}] {}", c.day.to_string().cyan(), c.reason);
+                }
+            }
+        }
+        Some(Commands::Teacher { query }) => {
+            let q = query.as_deref().unwrap_or("").trim();
+            if q.is_empty() {
+                println!("🔍 Usage: academic-routine teacher <name, initials, or course code>");
+                println!("   Example: academic-routine teacher basar");
+                println!("            academic-routine teacher SS");
+                println!("            academic-routine teacher 4125\n");
+                let dir = schedule.teacher_directory();
+                println!("📚 All Faculty Members ({} total):", dir.len());
+                for name in dir.keys() {
+                    println!("   • {name}");
+                }
+                return;
+            }
+
+            let matches = schedule.find_teachers(q);
+            if matches.is_empty() {
+                println!(
+                    "{} No faculty members found matching '{}'.",
+                    "🔍".yellow(),
+                    q.cyan()
+                );
+            } else {
+                for (name, contact, courses) in &matches {
+                    print!("{}", render_teacher_card(name, contact, courses));
                 }
             }
         }

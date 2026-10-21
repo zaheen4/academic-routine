@@ -173,6 +173,49 @@ impl Schedule {
         }
         dir
     }
+
+    /// Searches for instructors matching a query string across their name, initials, or courses taught.
+    /// Returns a list of tuples containing (Instructor Name, Contact Details, Courses Taught).
+    #[must_use]
+    pub fn find_teachers(
+        &self,
+        query: &str,
+    ) -> Vec<(String, crate::model::course::TeacherContact, Vec<&CourseEntry>)> {
+        let q = query.trim().to_lowercase();
+        let mut results = Vec::new();
+        let directory = self.teacher_directory();
+
+        for (name, contact) in directory {
+            let name_lower = name.to_lowercase();
+
+            // Check initials (e.g. "Md. Abul Basar" -> "mab", "ab")
+            let initials: String = name
+                .split_whitespace()
+                .filter_map(|w| w.chars().next())
+                .collect::<String>()
+                .to_lowercase();
+
+            let taught_courses: Vec<&CourseEntry> = self
+                .entries
+                .iter()
+                .filter(|e| e.teacher.name == name)
+                .collect();
+
+            let course_matches = taught_courses.iter().any(|c| {
+                c.code.to_lowercase().contains(&q) || c.title.to_lowercase().contains(&q)
+            });
+
+            if q.is_empty()
+                || name_lower.contains(&q)
+                || initials.contains(&q)
+                || course_matches
+            {
+                results.push((name, contact, taught_courses));
+            }
+        }
+
+        results
+    }
 }
 
 #[cfg(test)]
@@ -291,5 +334,57 @@ mod tests {
         assert!(conflicts[0].reason.contains("[B1] CSE-4101"));
         assert!(conflicts[0].reason.contains("[B2] CSE-4103"));
         assert!(conflicts[0].reason.contains("Same Room: 120"));
+    }
+
+    #[test]
+    fn test_find_teachers_search() {
+        let t1 = TeacherContact::new(
+            "Md. Abul Basar",
+            Some("01758443472".into()),
+            Some("basar@niter.edu.bd".into()),
+        );
+        let t2 = TeacherContact::new("Dr. Muhammad Asif", None, None);
+        let slot = TimeSlot::from_str("10:30 - 13:00").unwrap();
+
+        let e1 = CourseEntry::new(
+            "CSE-4125",
+            "Machine Learning Lab",
+            "B2",
+            DayOfWeek::Sun,
+            slot,
+            "AC-202",
+            t1,
+        );
+        let e2 = CourseEntry::new(
+            "CSE-4101",
+            "Artificial Intelligence",
+            "B",
+            DayOfWeek::Sun,
+            slot,
+            "AC-131",
+            t2,
+        );
+
+        let sched = Schedule::new("L4T1", None, vec![e1, e2]);
+
+        // Search by name substring
+        let res_name = sched.find_teachers("basar");
+        assert_eq!(res_name.len(), 1);
+        assert_eq!(res_name[0].0, "Md. Abul Basar");
+        assert_eq!(res_name[0].2.len(), 1);
+
+        // Search by course code
+        let res_course = sched.find_teachers("4125");
+        assert_eq!(res_course.len(), 1);
+        assert_eq!(res_course[0].0, "Md. Abul Basar");
+
+        // Search by initials
+        let res_initials = sched.find_teachers("mab");
+        assert_eq!(res_initials.len(), 1);
+        assert_eq!(res_initials[0].0, "Md. Abul Basar");
+
+        // Empty query returns all
+        let res_all = sched.find_teachers("");
+        assert_eq!(res_all.len(), 2);
     }
 }

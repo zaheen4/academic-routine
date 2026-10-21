@@ -97,7 +97,41 @@ pub fn render_day_table(schedule: &Schedule, day: DayOfWeek) -> String {
         ]);
     }
 
-    format!("📅 {}\n{table}\n", day.full_name())
+    format!("── {} ──\n{table}\n", day.full_name())
+}
+
+/// Renders a terminal profile card for an individual instructor.
+#[must_use]
+pub fn render_teacher_card(
+    name: &str,
+    contact: &crate::model::course::TeacherContact,
+    courses: &[&crate::model::course::CourseEntry],
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("┌── Faculty Profile: {name} ───────────────────────────\n"));
+    if let Some(ref p) = contact.phone {
+        out.push_str(&format!("│ Phone   : {p}\n"));
+    }
+    if let Some(ref e) = contact.email {
+        out.push_str(&format!("│ Email   : {e}\n"));
+    }
+    if !courses.is_empty() {
+        out.push_str("│\n│ Courses Taught:\n");
+        for c in courses {
+            let lab_badge = if c.is_lab() { " [LAB]" } else { "" };
+            out.push_str(&format!(
+                "│ • {} : {}{}\n│   {} {} (Room {})\n",
+                c.code,
+                c.title,
+                lab_badge,
+                c.day.full_name(),
+                c.time_slot.format_12h(),
+                c.room
+            ));
+        }
+    }
+    out.push_str("└──────────────────────────────────────────────────────\n");
+    out
 }
 
 /// Renders the complete weekly schedule across all class days.
@@ -131,7 +165,7 @@ pub fn render_today_card(schedule: &Schedule, day: DayOfWeek, now: NaiveTime) ->
         );
     }
 
-    let mut out = format!("📅 Today's Itinerary: {}\n", day.full_name());
+    let mut out = format!("Today's Itinerary ({}):\n", day.full_name());
     out.push_str(&render_day_table(schedule, day));
 
     // Find current active class

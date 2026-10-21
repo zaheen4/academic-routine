@@ -155,9 +155,8 @@ impl RoutineState {
     }
 
     /// Returns true if vacation mode is currently active.
-    ///
-    /// Automatically clears and expires vacation mode if `vacation_until` is in the past.
-    pub fn is_vacation_active(&mut self) -> bool {
+    #[must_use]
+    pub fn is_vacation_active(&self) -> bool {
         if !self.vacation_mode {
             return false;
         }
@@ -165,13 +164,27 @@ impl RoutineState {
         if let Some(until) = self.vacation_until {
             let today = academic_now().date_naive();
             if today > until {
-                self.vacation_mode = false;
-                self.vacation_until = None;
                 return false;
             }
         }
 
         true
+    }
+
+    /// Automatically clears and expires vacation mode if `vacation_until` is in the past.
+    /// Returns true if the state was mutated.
+    pub fn clean_expired_vacation(&mut self) -> bool {
+        if self.vacation_mode {
+            if let Some(until) = self.vacation_until {
+                let today = academic_now().date_naive();
+                if today > until {
+                    self.vacation_mode = false;
+                    self.vacation_until = None;
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Enables or disables vacation mode with an optional auto-expiration date.
@@ -218,6 +231,8 @@ impl RoutineState {
                 }
             }
         }
+
+        let _ = state.clean_expired_vacation();
 
         Ok(state)
     }
@@ -294,9 +309,10 @@ mod tests {
         state.set_vacation(true, Some(NaiveDate::from_ymd_opt(2099, 1, 1).unwrap()));
         assert!(state.is_vacation_active());
 
-        // Past expiration should auto-expire
+        // Past expiration should evaluate as inactive and clear when cleaned
         state.set_vacation(true, Some(NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()));
         assert!(!state.is_vacation_active());
+        assert!(state.clean_expired_vacation());
         assert!(!state.vacation_mode);
         assert_eq!(state.vacation_until, None);
     }

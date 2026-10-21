@@ -40,6 +40,14 @@ fn test_all_bot_commands_syntax_parsing() {
 
     // 2. Commands with arguments
     assert_eq!(
+        Command::parse("/teacher basar", "").unwrap(),
+        Command::Teacher("basar".to_string())
+    );
+    assert_eq!(
+        Command::parse("/teacher SS", "").unwrap(),
+        Command::Teacher("SS".to_string())
+    );
+    assert_eq!(
         Command::parse("/complete CSE-4125", "").unwrap(),
         Command::Complete("CSE-4125".to_string())
     );

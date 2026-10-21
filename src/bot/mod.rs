@@ -1,13 +1,16 @@
 //! Telegram Bot service for interactive schedule queries and 6:00 AM morning alerts.
 
 pub mod handlers;
+pub mod keyboards;
 pub mod scheduler;
 
-pub use handlers::{handle_command, BotContext, Command};
+pub use handlers::{handle_callback_query, handle_command, BotContext, Command};
 pub use scheduler::{start_class_reminder_daemon, start_morning_scheduler};
 
 use std::sync::Arc;
+use teloxide::dispatching::UpdateFilterExt;
 use teloxide::prelude::*;
+use teloxide::types::Update;
 use teloxide::utils::command::BotCommands;
 
 /// Launches the interactive Telegram bot daemon and 6:00 AM morning scheduler.
@@ -129,31 +132,51 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
     }
 
     println!("🤖 Academic Routine Telegram Bot is online and listening for messages!");
-    println!("   Commands supported: /today, /next, /tomorrow, /free, /drop, /restore, /calendar, /sync");
+    println!("   Commands supported: /today, /next, /tomorrow, /free, /teacher, /teachers, /routine, /calendar, /sync");
 
-    let handler_ctx = Arc::clone(&shared_ctx);
-    Command::repl(bot, move |b: Bot, msg: Message, cmd: Command| {
-        let c = Arc::clone(&handler_ctx);
-        async move {
-            let sender = msg
-                .from
-                .as_ref()
-                .map(|u| u.first_name.clone())
-                .unwrap_or_else(|| "Unknown".to_string());
-            println!(
-                "📩 Received command: {:?} from {} (Chat ID: {})",
-                cmd, sender, msg.chat.id
-            );
-            let res = handle_command(b, msg, cmd, c).await;
-            if let Err(ref e) = res {
-                eprintln!("❌ Telegram API error: {e:?}");
-            } else {
-                println!("✅ Successfully replied to command.");
-            }
-            res
-        }
-    })
-    .await;
+    let handler = dptree::entry()
+        .branch(
+            Update::filter_message()
+                .filter_command::<Command>()
+                .endpoint(|bot: Bot, msg: Message, cmd: Command, ctx: Arc<BotContext>| async move {
+                    let sender = msg
+                        .from
+                        .as_ref()
+                        .map(|u| u.first_name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    println!(
+                        "📩 Received command: {:?} from {} (Chat ID: {})",
+                        cmd, sender, msg.chat.id
+                    );
+                    let res = handle_command(bot, msg, cmd, ctx).await;
+                    if let Err(ref e) = res {
+                        eprintln!("❌ Telegram API error: {e:?}");
+                    } else {
+                        println!("✅ Successfully replied to command.");
+                    }
+                    res
+                }),
+        )
+        .branch(
+            Update::filter_callback_query()
+                .endpoint(|bot: Bot, q: CallbackQuery, ctx: Arc<BotContext>| async move {
+                    let sender = &q.from.first_name;
+                    let data = q.data.as_deref().unwrap_or("none");
+                    println!("🔘 Received button callback '{data}' from {sender}");
+                    let res = handle_callback_query(bot, q, ctx).await;
+                    if let Err(ref e) = res {
+                        eprintln!("❌ Callback handling error: {e:?}");
+                    }
+                    res
+                }),
+        );
+
+    Dispatcher::builder(bot, handler)
+        .dependencies(dptree::deps![Arc::clone(&shared_ctx)])
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
 
     Ok(())
 }

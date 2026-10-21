@@ -34,7 +34,7 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
         eprintln!("Pre-briefing Gist sync note: {e}");
     }
 
-    let (sched, mut state) = match ctx.load_active_schedule() {
+    let (sched, state) = match ctx.load_active_schedule() {
         Ok(res) => res,
         Err(e) => {
             eprintln!("Scheduler error loading schedule: {e}");
@@ -123,7 +123,7 @@ pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc
             current_day = today;
         }
 
-        let (sched, mut state) = match ctx.load_active_schedule() {
+        let (sched, state) = match ctx.load_active_schedule() {
             Ok(res) => res,
             Err(_) => continue,
         };
