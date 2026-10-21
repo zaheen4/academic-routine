@@ -110,7 +110,7 @@ RE_TIME_SLOT = re.compile(
 )
 RE_PHONE = re.compile(r"\b(01\d{9})\b")
 RE_EMAIL = re.compile(r"\b([\w\.-]+@[\w\.-]+\.\w+)\b")
-RE_ROOM = re.compile(r"\b(\d{3}|AC-\d{3}|Lab[-\s]?\d?)\b", re.IGNORECASE)
+RE_ROOM = re.compile(r"\b(AC-\d{3}|\d{3}|CSE\s+Lab[-\s]?\d*|Lab[-\s]?\d+)\b", re.IGNORECASE)
 RE_SECTION = re.compile(r"\b(B|B1|B2|A|A1|A2|C|C1|C2)\b")
 DAYS_OF_WEEK = ("Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri")
 
@@ -232,14 +232,25 @@ def parse_report_html(html: str, default_section: str = "B") -> list[dict]:
         # Check for day in row
         day_found = next((d for d in DAYS_OF_WEEK if d in tds), None)
         if day_found and current_course_code:
-            time_match = RE_TIME_SLOT.search(row_str)
-            time_slot = time_match.group(1).strip() if time_match else ""
+            day_idx = tds.index(day_found)
 
-            room_match = RE_ROOM.search(row_str)
-            room = room_match.group(1).strip() if room_match else ""
+            # Room is strictly the column immediately following Day in the SSRS table
+            room = tds[day_idx + 1].strip() if day_idx + 1 < len(tds) else ""
+            if not room:
+                room_match = RE_ROOM.search(row_str)
+                room = room_match.group(1).strip() if room_match else ""
 
-            sec_match = RE_SECTION.search(row_str)
-            section = sec_match.group(1).strip() if sec_match else default_section
+            # Time slot is strictly the column after Room
+            time_slot = tds[day_idx + 2].strip() if day_idx + 2 < len(tds) else ""
+            if not time_slot:
+                time_match = RE_TIME_SLOT.search(row_str)
+                time_slot = time_match.group(1).strip() if time_match else ""
+
+            # Section is strictly the column after Time Slot
+            section = tds[day_idx + 3].strip() if day_idx + 3 < len(tds) else ""
+            if not section:
+                sec_match = RE_SECTION.search(row_str)
+                section = sec_match.group(1).strip() if sec_match else default_section
 
             teacher = ""
             teacher_phone = ""
