@@ -62,7 +62,7 @@ MONTHS = (
     "July", "August", "September", "October", "November", "December",
 )
 
-_TIME_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?", re.IGNORECASE)
+_TIME_RE = re.compile(r"^\s*(\d{1,2}):(\d{1,2})(?::\d{1,2})?(?:\s*(AM|PM))?", re.IGNORECASE)
 
 
 def column_letter(col_idx: int) -> str:
@@ -82,10 +82,10 @@ def format_stamp(dt: datetime) -> str:
 
 
 def clean_teacher_name(name: str) -> str:
-    """Strips leading initials prefix like 'UKD_' if present."""
+    """Strips leading initials prefix like 'UKD_' or 'MdAM_' if present."""
     if not name:
         return ""
-    return re.sub(r"^[A-Z]{2,4}_", "", name.strip())
+    return re.sub(r"^[A-Za-z0-9]{2,6}_", "", name.strip())
 
 
 def combine_contact_info(phone: str, email: str) -> str:
@@ -99,6 +99,7 @@ def combine_contact_info(phone: str, email: str) -> str:
 
 def format_one_time(text: str) -> tuple[str, int]:
     """Parses a time token and returns (formatted 12h string, sortable minute integer)."""
+    text = text.strip()
     match = _TIME_RE.match(text)
     if not match:
         return text, UNPARSEABLE_TIME
@@ -114,22 +115,23 @@ def format_one_time(text: str) -> tuple[str, int]:
 
     sortable = hour * 60 + minute
     display_hour = hour % 12 or 12
-    display_period = "AM" if hour < 12 else "PM"
-    return f"{display_hour}:{minute:02d} {display_period}", sortable
+    return f"{display_hour}:{minute:02d} {period}", sortable
 
 
 def parse_and_format_time_slot(slot: str) -> tuple[str, int]:
-    """Formats full slot (e.g. '8:0 AM - 9:15 AM') into clean 12h range and returns start minute."""
-    if not slot or not slot.strip():
+    """Formats full slot (e.g. '8:0 AM - 9:15 AM' or '11:45 - 1:0') into clean 12h range and returns start minute."""
+    if not slot or (isinstance(slot, str) and not slot.strip()):
         return "", 99999
 
-    parts = re.split(r"\s*[-–—]\s*", slot.strip())
-    if len(parts) != 2:
-        return slot.strip(), UNPARSEABLE_TIME
-
+    parts = re.split(r"\s*[-–—]\s*", str(slot).strip())
     start_fmt, start_sort = format_one_time(parts[0])
-    end_fmt, _ = format_one_time(parts[1])
-    return f"{start_fmt} - {end_fmt}", start_sort
+    end_text = parts[1] if len(parts) > 1 else ""
+    if end_text:
+        end_fmt, _ = format_one_time(end_text)
+        formatted = f"{start_fmt} - {end_fmt}" if end_fmt else start_fmt
+    else:
+        formatted = start_fmt
+    return formatted, start_sort
 
 
 def normalize_day(day_str: str) -> int:
@@ -260,10 +262,15 @@ def sync_to_google_sheet(json_path: Path, key_path: Path, spreadsheet_name: str)
             ws_main.update(values=[[NO_DATA_MESSAGE]], range_name="B4")
             last_data_row = DATA_START_ROW
 
-        # Clear stale tail below data
+        # Clear stale tail below data and any stray columns beyond I
         stale_from = last_data_row + 1
+        clear_ranges = []
         if stale_from <= ws_main.row_count:
-            ws_main.batch_clear([f"B{stale_from}:I{ws_main.row_count}"])
+            clear_ranges.append(f"B{stale_from}:Z{ws_main.row_count}")
+        if ws_main.col_count > DATA_START_COL + DATA_WIDTH - 1:
+            clear_ranges.append(f"J4:Z{last_data_row}")
+        if clear_ranges:
+            ws_main.batch_clear(clear_ranges)
 
         # Write footer stamp
         stamp_row = last_data_row + 2
