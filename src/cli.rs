@@ -45,20 +45,72 @@ pub enum Commands {
     /// Scan schedule for time overlaps and room double-bookings
     Conflicts,
 
-    /// Drop a course, excluding it from schedules and calendar exports
+    /// Mark a course whose syllabus is completed as finished (hides from alerts and calendar)
+    Complete {
+        /// Course code to complete (e.g. 'CSE-4125')
+        code: String,
+    },
+
+    /// Drop a course, excluding it from schedules and calendar exports (alias for complete)
     Drop {
         /// Course code to drop (e.g. 'CSE-4101')
         code: String,
     },
 
-    /// Restore a previously dropped course
+    /// Restore or resume an active schedule for a previously completed course
+    Resume {
+        /// Course code to resume
+        code: String,
+    },
+
+    /// Restore a previously dropped course (alias for resume)
     Restore {
         /// Course code to restore
         code: String,
     },
 
-    /// List all currently dropped/hidden courses
+    /// List all courses currently marked as completed for the semester
+    Completed,
+
+    /// List all currently dropped/hidden courses (alias for completed)
     Dropped,
+
+    /// Display complete subsystem status, active routine, vacation mode, and integration health
+    Status,
+
+    /// Manage vacation / semester break mode (e.g. 'vacation on', 'vacation off', 'vacation until 2026-11-15')
+    Vacation {
+        /// Action to perform: 'on', 'off', 'status', or 'until'
+        action: Option<String>,
+
+        /// Auto-expiration date if action is 'until' (format: YYYY-MM-DD)
+        #[arg(long)]
+        until: Option<String>,
+    },
+
+    /// Manage proactive 6:00 AM morning briefings ('on', 'off', 'status')
+    Alerts {
+        /// Action to perform: 'on', 'off', or 'status'
+        action: Option<String>,
+    },
+
+    /// Pause a subsystem: 'alerts', 'gist', 'gsheet', or 'all'
+    Pause {
+        /// Subsystem to pause
+        target: Option<String>,
+    },
+
+    /// Unpause / resume a subsystem: 'alerts', 'gist', 'gsheet', or 'all'
+    Unpause {
+        /// Subsystem to unpause
+        target: Option<String>,
+    },
+
+    /// Manage automated weekly background sync timer ('status', 'pause', 'resume', 'run')
+    Timer {
+        /// Action to perform: 'status', 'pause', 'resume', or 'run'
+        action: Option<String>,
+    },
 
     /// Export schedule to calendar or file formats
     Export {
@@ -73,6 +125,10 @@ pub enum Commands {
         /// Automatically sync exported .ics to configured GitHub Gist
         #[arg(long)]
         sync_gist: bool,
+
+        /// Export all courses including completed ones
+        #[arg(long)]
+        include_all: bool,
     },
 
     /// Link a GitHub Gist ID for automatic live calendar sync
@@ -85,7 +141,11 @@ pub enum Commands {
     SyncGist,
 
     /// Run the interactive Telegram Assistant Bot and 6:00 AM alert daemon
-    Bot,
+    Bot {
+        /// Disable lightweight HTTP health-check server (useful for pure local runs)
+        #[arg(long)]
+        no_http: bool,
+    },
 
     /// Display teacher directory with phone numbers and emails
     Teachers,
@@ -106,5 +166,17 @@ pub enum Commands {
         /// Run browser visibly for debugging (default: false / headless offscreen virtual display)
         #[arg(long)]
         headed: bool,
+
+        /// Only update local routine_data.json and routine.ics (skip Gist and Google Sheets)
+        #[arg(long)]
+        local_only: bool,
+
+        /// Skip syncing calendar and routine to GitHub Gist
+        #[arg(long)]
+        no_gist: bool,
+
+        /// Skip syncing routine to Google Spreadsheet
+        #[arg(long)]
+        no_gsheet: bool,
     },
 }

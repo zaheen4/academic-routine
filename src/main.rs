@@ -42,60 +42,320 @@ fn state_path() -> PathBuf {
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
     let cli = Cli::parse();
     let state_file = state_path();
     let mut state = RoutineState::load_or_default(&state_file).unwrap_or_default();
 
-    // Handle course lifecycle commands that don't require loading routine data
+    // Handle commands that don't strictly require reading full routine upfront
     match &cli.command {
-        Some(Commands::Drop { code }) => {
-            if state.drop_course(code) {
+        Some(Commands::Complete { code }) | Some(Commands::Drop { code }) => {
+            if state.complete_course(code) {
                 if let Err(e) = state.save(&state_file) {
                     eprintln!("{} Failed to save state: {e}", "❌".red());
                 } else {
                     println!(
-                        "{} Dropped course {}. It is now excluded from schedules and calendar exports.",
-                        "✅".green(),
+                        "{} Marked course {} as completed. Excluded from schedules and calendar exports.",
+                        "🏁".green().bold(),
                         code.to_uppercase().bold()
                     );
-                    println!("   Active dropped courses: {:?}", state.dropped_courses);
+                    println!("   Active completed courses: {:?}", state.dropped_courses);
                 }
             } else {
                 println!(
-                    "{} Course {} is already marked as dropped.",
+                    "{} Course {} is already marked as completed.",
                     "ℹ️".cyan(),
                     code.to_uppercase().bold()
                 );
             }
             return;
         }
-        Some(Commands::Restore { code }) => {
-            if state.restore_course(code) {
+        Some(Commands::Resume { code }) | Some(Commands::Restore { code }) => {
+            if state.resume_course(code) {
                 if let Err(e) = state.save(&state_file) {
                     eprintln!("{} Failed to save state: {e}", "❌".red());
                 } else {
                     println!(
-                        "{} Restored course {}. It will now appear in your schedule and calendar exports.",
-                        "✅".green(),
+                        "{} Resumed course {}. It will now appear in your schedule and calendar exports.",
+                        "✅".green().bold(),
                         code.to_uppercase().bold()
                     );
                 }
             } else {
                 println!(
-                    "{} Course {} was not in the dropped list.",
+                    "{} Course {} was not in the completed list.",
                     "ℹ️".yellow(),
                     code.to_uppercase().bold()
                 );
             }
             return;
         }
-        Some(Commands::Dropped) => {
+        Some(Commands::Completed) | Some(Commands::Dropped) => {
             if state.dropped_courses.is_empty() {
-                println!("{} No courses are currently dropped.", "ℹ️".green());
+                println!("{} No courses are currently marked as completed.", "ℹ️".green());
             } else {
-                println!("{} Currently dropped courses:", "🚫".yellow());
+                println!("{} Currently completed courses:", "🎓".cyan().bold());
                 for c in &state.dropped_courses {
                     println!("   • {}", c.bold());
+                }
+            }
+            return;
+        }
+        Some(Commands::Status) => {
+            println!("============================================================");
+            println!("              🎓 Academic Routine Subsystem Status          ");
+            println!("============================================================");
+
+            let routine_opt = resolve_routine_path(cli.file.as_ref());
+            match routine_opt {
+                Some(ref p) => {
+                    if let Ok(raw) = load_routine_file(p) {
+                        let completed_count = state.dropped_courses.len();
+                        let active_count = raw.filter_active(&state.dropped_courses).entries.len();
+                        println!(
+                            "📁 Routine Data       : {} ({}, {} total classes)",
+                            p.display().to_string().cyan(),
+                            raw.semester_name.yellow().bold(),
+                            raw.entries.len()
+                        );
+                        println!(
+                            "🛡️ Courses Active     : {} ongoing ({} completed)",
+                            active_count.to_string().green().bold(),
+                            completed_count.to_string().cyan()
+                        );
+                    } else {
+                        println!("📁 Routine Data       : {} (Parse Error)", p.display().to_string().red());
+                    }
+                }
+                None => println!("📁 Routine Data       : {}", "None found".red()),
+            }
+
+            if state.is_vacation_active() {
+                if let Some(until) = state.vacation_until {
+                    println!("🏖️ Vacation Mode      : {} (until {})", "ACTIVE".yellow().bold(), until);
+                } else {
+                    println!("🏖️ Vacation Mode      : {}", "ACTIVE (Semester Break)".yellow().bold());
+                }
+            } else {
+                println!("🏖️ Vacation Mode      : {}", "INACTIVE (Semester classes ongoing)".green());
+            }
+
+            let chat_id_str = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_else(|_| "Not configured".to_string());
+            let env_username = std::env::var("TELEGRAM_USERNAME").ok();
+            let resolved_user = state.telegram_username.as_ref().or(env_username.as_ref());
+            let user_info = resolved_user
+                .map(|u| format!("{u} [Chat {chat_id_str}]"))
+                .unwrap_or_else(|| format!("Chat {chat_id_str}"));
+            if state.morning_alerts {
+                println!("🔔 Morning Alerts     : {} (06:00 AM to {})", "ENABLED".green().bold(), user_info.cyan());
+            } else {
+                println!("🔕 Morning Alerts     : {}", "PAUSED".yellow().bold());
+            }
+
+            println!("\n--- Subsystems & Integrations ---");
+            println!("🖥️  Offline CLI       : {}", "READY".green().bold());
+
+            let ics_path = PathBuf::from("routine.ics");
+            if ics_path.exists() {
+                println!("📅 Calendar (.ics)    : {} ({})", "GENERATED".green().bold(), ics_path.display().to_string().cyan());
+            } else {
+                println!("📅 Calendar (.ics)    : {}", "Not yet generated (run export)".yellow());
+            }
+
+            if let Some(ref gid) = state.gist_id {
+                let status_str = if state.auto_sync_gist { "ACTIVE".green().bold() } else { "PAUSED".yellow().bold() };
+                println!("🔗 GitHub Gist Feed   : {} ({gid})", status_str);
+            } else {
+                println!("🔗 GitHub Gist Feed   : {}", "Not linked (set-gist <ID>)".yellow());
+            }
+
+            let sheet_name = std::env::var("SPREADSHEET_NAME")
+                .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
+            let status_sheet = if state.auto_sync_gsheet { "ACTIVE".green().bold() } else { "PAUSED".yellow().bold() };
+            println!("📊 Google Sheets Sync : {} ({sheet_name})", status_sheet);
+
+            let timer_active = std::process::Command::new("systemctl")
+                .args(["--user", "is-active", "academic-routine-sync.timer"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+                .unwrap_or(false);
+            if timer_active {
+                println!("⏱️ Weekly Auto-Timer : {} (Saturday 20:00:00)", "ACTIVE".green().bold());
+            } else {
+                println!("⏱️ Weekly Auto-Timer : {}", "INACTIVE / PAUSED".yellow().bold());
+            }
+
+            println!("🤖 Telegram Bot       : {}", "ONLINE (Local daemon / Render suspended)".green().bold());
+            println!("============================================================");
+            return;
+        }
+        Some(Commands::Vacation { action, until }) => {
+            let act = action.as_deref().unwrap_or("status").to_lowercase();
+            match act.as_str() {
+                "on" | "enable" | "start" => {
+                    let end_date = if let Some(d_str) = until {
+                        match chrono::NaiveDate::parse_from_str(d_str, "%Y-%m-%d") {
+                            Ok(d) => Some(d),
+                            Err(e) => {
+                                eprintln!("{} Invalid date format (expected YYYY-MM-DD): {e}", "❌".red());
+                                return;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    state.set_vacation(true, end_date);
+                    let _ = state.save(&state_file);
+                    if let Some(d) = end_date {
+                        println!("{} Vacation mode activated until {d}. Morning alerts and class reminders are paused.", "🏖️".yellow().bold());
+                    } else {
+                        println!("{} Vacation mode activated. Morning alerts and class reminders are paused.", "🏖️".yellow().bold());
+                    }
+                }
+                "off" | "disable" | "stop" | "resume" => {
+                    state.set_vacation(false, None);
+                    let _ = state.save(&state_file);
+                    println!("{} Vacation mode deactivated. Regular schedule notifications are active.", "🎒".green().bold());
+                }
+                _ => {
+                    if state.is_vacation_active() {
+                        if let Some(until) = state.vacation_until {
+                            println!("🏖️ Vacation mode is ACTIVE until {}", until.to_string().cyan().bold());
+                        } else {
+                            println!("🏖️ Vacation mode is ACTIVE (Semester Break)");
+                        }
+                    } else {
+                        println!("🎒 Vacation mode is INACTIVE (Normal semester classes ongoing)");
+                    }
+                    println!("   Use '{}' or '{}' to toggle.", "academic-routine vacation on".cyan(), "academic-routine vacation off".cyan());
+                }
+            }
+            return;
+        }
+        Some(Commands::Alerts { action }) => {
+            let act = action.as_deref().unwrap_or("status").to_lowercase();
+            match act.as_str() {
+                "off" | "disable" | "pause" | "stop" => {
+                    state.set_morning_alerts(false);
+                    let _ = state.save(&state_file);
+                    println!("{} 06:00 AM proactive morning briefings PAUSED.", "🔕".yellow().bold());
+                }
+                "on" | "enable" | "resume" | "start" => {
+                    state.set_morning_alerts(true);
+                    let _ = state.save(&state_file);
+                    println!("{} 06:00 AM proactive morning briefings RESUMED.", "🔔".green().bold());
+                }
+                _ => {
+                    let user_info = state.telegram_username.as_deref()
+                        .map(|u| format!(" ({u})"))
+                        .unwrap_or_default();
+                    if state.morning_alerts {
+                        println!("🔔 Morning briefings: ENABLED (06:00 AM on class days){user_info}");
+                    } else {
+                        println!("🔕 Morning briefings: PAUSED{user_info}");
+                    }
+                    println!("   Use '{}' or '{}' to toggle.", "academic-routine alerts on".cyan(), "academic-routine alerts off".cyan());
+                }
+            }
+            return;
+        }
+        Some(Commands::Pause { target }) => {
+            let tgt = target.as_deref().unwrap_or("all").to_lowercase();
+            match tgt.as_str() {
+                "alerts" => {
+                    state.set_morning_alerts(false);
+                    let _ = state.save(&state_file);
+                    println!("{} Morning alerts paused.", "🔕".yellow().bold());
+                }
+                "gist" => {
+                    state.set_sync_gist(false);
+                    let _ = state.save(&state_file);
+                    println!("{} Automatic GitHub Gist sync paused.", "⏸️".yellow().bold());
+                }
+                "gsheet" => {
+                    state.set_sync_gsheet(false);
+                    let _ = state.save(&state_file);
+                    println!("{} Automatic Google Sheets sync paused.", "⏸️".yellow().bold());
+                }
+                _ => {
+                    state.set_morning_alerts(false);
+                    state.set_vacation(true, None);
+                    let _ = state.save(&state_file);
+                    println!("{} All alerts and automated activities PAUSED (Vacation mode on).", "⏸️".yellow().bold());
+                }
+            }
+            return;
+        }
+        Some(Commands::Unpause { target }) => {
+            let tgt = target.as_deref().unwrap_or("all").to_lowercase();
+            match tgt.as_str() {
+                "alerts" => {
+                    state.set_morning_alerts(true);
+                    let _ = state.save(&state_file);
+                    println!("{} Morning alerts resumed.", "🔔".green().bold());
+                }
+                "gist" => {
+                    state.set_sync_gist(true);
+                    let _ = state.save(&state_file);
+                    println!("{} Automatic GitHub Gist sync resumed.", "▶️".green().bold());
+                }
+                "gsheet" => {
+                    state.set_sync_gsheet(true);
+                    let _ = state.save(&state_file);
+                    println!("{} Automatic Google Sheets sync resumed.", "▶️".green().bold());
+                }
+                _ => {
+                    state.set_morning_alerts(true);
+                    state.set_vacation(false, None);
+                    let _ = state.save(&state_file);
+                    println!("{} System RESUMED (Normal semester operations active).", "▶️".green().bold());
+                }
+            }
+            return;
+        }
+        Some(Commands::Timer { action }) => {
+            let act = action.as_deref().unwrap_or("status").to_lowercase();
+            match act.as_str() {
+                "pause" | "stop" | "disable" => {
+                    let res = std::process::Command::new("systemctl")
+                        .args(["--user", "stop", "academic-routine-sync.timer"])
+                        .status();
+                    match res {
+                        Ok(s) if s.success() => println!("{} Weekly auto-sync timer PAUSED.", "⏸️".yellow().bold()),
+                        _ => eprintln!("{} Could not pause systemd timer (systemctl --user unavailable or failed).", "⚠️".yellow()),
+                    }
+                }
+                "resume" | "start" | "enable" => {
+                    let res = std::process::Command::new("systemctl")
+                        .args(["--user", "start", "academic-routine-sync.timer"])
+                        .status();
+                    match res {
+                        Ok(s) if s.success() => println!("{} Weekly auto-sync timer RESUMED (runs Saturdays at 20:00).", "▶️".green().bold()),
+                        _ => eprintln!("{} Could not resume systemd timer (systemctl --user unavailable or failed).", "⚠️".yellow()),
+                    }
+                }
+                "run" | "trigger" => {
+                    println!("🚀 Triggering immediate execution of automated sync service...");
+                    let res = std::process::Command::new("systemctl")
+                        .args(["--user", "start", "academic-routine-sync.service"])
+                        .status();
+                    match res {
+                        Ok(s) if s.success() => println!("{} Sync service launched in background.", "✅".green().bold()),
+                        _ => eprintln!("{} Could not trigger service.", "❌".red()),
+                    }
+                }
+                _ => {
+                    let is_active = std::process::Command::new("systemctl")
+                        .args(["--user", "is-active", "academic-routine-sync.timer"])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+                        .unwrap_or(false);
+                    if is_active {
+                        println!("⏱️ Weekly sync timer: {} (Runs Saturday 20:00:00)", "ACTIVE".green().bold());
+                    } else {
+                        println!("⏱️ Weekly sync timer: {}", "INACTIVE / PAUSED".yellow().bold());
+                    }
+                    println!("   Commands: '{}', '{}', '{}'", "timer pause".cyan(), "timer resume".cyan(), "timer run".cyan());
                 }
             }
             return;
@@ -126,6 +386,9 @@ async fn main() {
         Some(Commands::SyncUcam {
             force: _,
             headed,
+            local_only,
+            no_gist,
+            no_gsheet,
         }) => {
             println!(
                 "🌐 {}",
@@ -150,44 +413,68 @@ async fn main() {
                         println!("   • Total classes extracted: {}", raw_sched.entries.len());
                         println!("   • Semester: {}", raw_sched.semester_name.yellow().bold());
 
+                        // CRITICAL FIX: Filter completed courses before exporting routine.ics!
+                        let active_sched = raw_sched.filter_active(&state.dropped_courses);
                         let ics_path = PathBuf::from("routine.ics");
-                        let _ = export_ics_file(&raw_sched, &ics_path, state.semester_end_date);
+                        let _ = export_ics_file(&active_sched, &ics_path, state.semester_end_date);
+                        println!("   • Exported active calendar to: {}", ics_path.display().to_string().cyan());
 
-                        if let Some(ref gid) = state.gist_id {
-                            println!("🔄 Syncing routine data and calendar to GitHub Gist...");
-                            match academic_routine::sync_gist_bundle(gid, &ics_path, &path).await {
-                                Ok(url) => {
-                                    println!("🚀 Live subscription feed updated: {}", url.yellow().bold());
-                                    println!("   • Synced both routine.ics and routine_data.json to Gist!");
-                                }
-                                Err(e) => eprintln!("⚠️ Gist sync notice: {e}"),
-                            }
+                        if *local_only {
+                            println!("🔒 Local-only mode active: skipping cloud Gist and Google Sheets sync.");
+                            return;
                         }
 
-                        // Check if Google Cloud Service Account key is available for Google Sheets sync
-                        let service_key_candidates = [
-                            PathBuf::from("google_cloud_keys/service_account_key.json"),
-                            PathBuf::from("/home/eyepatch/Documents/projects/routine-to-gsheet/google_cloud_keys/service_account_key.json"),
-                        ];
-                        let has_service_key = std::env::var("GOOGLE_SERVICE_ACCOUNT_KEY")
-                            .map(PathBuf::from)
-                            .map(|p| p.exists())
-                            .unwrap_or(false)
-                            || service_key_candidates.iter().any(|p| p.exists());
-
-                        if has_service_key {
-                            let sheet_name = std::env::var("SPREADSHEET_NAME")
-                                .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
-                            println!("📊 Syncing routine to Google Spreadsheet ({sheet_name})...");
-                            match academic_routine::run_gsheet_sync(&path) {
-                                Ok(()) => {
-                                    println!(
-                                        "{} Synced to Google Spreadsheet (NewMain & backend tabs)!",
-                                        "✅".green().bold()
-                                    );
+                        // Gist sync
+                        if !*no_gist && state.auto_sync_gist {
+                            if let Some(ref gid) = state.gist_id {
+                                println!("🔄 Syncing routine data, calendar, and state to GitHub Gist...");
+                                match academic_routine::sync_gist_bundle_with_state(
+                                    gid,
+                                    &ics_path,
+                                    &path,
+                                    Some(&state_file),
+                                )
+                                .await
+                                {
+                                    Ok(url) => {
+                                        println!("🚀 Live subscription feed updated: {}", url.yellow().bold());
+                                        println!("   • Synced routine.ics, routine_data.json, and routine_state.json to Gist!");
+                                    }
+                                    Err(e) => eprintln!("⚠️ Gist sync notice: {e}"),
                                 }
-                                Err(e) => eprintln!("⚠️ Google Sheets sync note: {e}"),
                             }
+                        } else if *no_gist {
+                            println!("ℹ️ Gist sync skipped (--no-gist).");
+                        }
+
+                        // Google Sheets sync
+                        if !*no_gsheet && state.auto_sync_gsheet {
+                            let service_key_candidates = [
+                                PathBuf::from("google_cloud_keys/service_account_key.json"),
+                                PathBuf::from("/home/eyepatch/Documents/projects/routine-to-gsheet/google_cloud_keys/service_account_key.json"),
+                            ];
+                            let has_service_key = std::env::var("GOOGLE_SERVICE_ACCOUNT_KEY")
+                                .map(PathBuf::from)
+                                .map(|p| p.exists())
+                                .unwrap_or(false)
+                                || service_key_candidates.iter().any(|p| p.exists());
+
+                            if has_service_key {
+                                let sheet_name = std::env::var("SPREADSHEET_NAME")
+                                    .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
+                                println!("📊 Syncing routine to Google Spreadsheet ({sheet_name})...");
+                                match academic_routine::run_gsheet_sync(&path) {
+                                    Ok(()) => {
+                                        println!(
+                                            "{} Synced to Google Spreadsheet (NewMain & backend tabs)!",
+                                            "✅".green().bold()
+                                        );
+                                    }
+                                    Err(e) => eprintln!("⚠️ Google Sheets sync note: {e}"),
+                                }
+                            }
+                        } else if *no_gsheet {
+                            println!("ℹ️ Google Sheets sync skipped (--no-gsheet).");
                         }
                     }
                 }
@@ -231,7 +518,7 @@ async fn main() {
             }
             return;
         }
-        Some(Commands::Bot) => {
+        Some(Commands::Bot { no_http }) => {
             let routine_path = resolve_routine_path(cli.file.as_ref())
                 .unwrap_or_else(|| PathBuf::from("routine_data.json"));
 
@@ -241,6 +528,7 @@ async fn main() {
                 section: cli
                     .section
                     .or_else(|| std::env::var("DEFAULT_SECTION").ok()),
+                no_http: *no_http,
             };
 
             if let Err(e) = academic_routine::run_bot_daemon(ctx).await {
@@ -373,6 +661,7 @@ async fn main() {
             ics,
             until,
             sync_gist,
+            include_all,
         }) => {
             let end_date = if let Some(ref d_str) = until {
                 match chrono::NaiveDate::parse_from_str(d_str, "%Y-%m-%d") {
@@ -389,14 +678,20 @@ async fn main() {
                 state.semester_end_date
             };
 
-            match export_ics_file(&schedule, &ics, end_date) {
+            let sched_to_export = if include_all {
+                &raw_schedule
+            } else {
+                &schedule
+            };
+
+            match export_ics_file(sched_to_export, &ics, end_date) {
                 Ok(()) => {
                     println!(
                         "{} Generated iCalendar feed at {}",
                         "📅".green().bold(),
                         ics.display().to_string().cyan().bold()
                     );
-                    println!("   • Active classes exported: {}", schedule.entries.len());
+                    println!("   • Active classes exported: {}", sched_to_export.entries.len());
                     if let Some(until) = end_date {
                         println!("   • Automatic expiry (UNTIL): {}", until);
                     }
@@ -446,10 +741,10 @@ async fn main() {
                 let _ = export_ics_file(&schedule, &ics_path, state.semester_end_date);
             }
 
-            println!("{} Syncing routine and calendar to GitHub Gist...", "🔄".cyan());
+            println!("{} Syncing routine, calendar, and state to GitHub Gist...", "🔄".cyan());
             let json_path = PathBuf::from("routine_data.json");
             let result = if json_path.exists() {
-                academic_routine::sync_gist_bundle(gid, &ics_path, &json_path).await
+                academic_routine::sync_gist_bundle_with_state(gid, &ics_path, &json_path, Some(&state_file)).await
             } else {
                 academic_routine::sync_gist_file(gid, &ics_path).await
             };

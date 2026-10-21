@@ -27,7 +27,7 @@ fn resolve_github_token() -> Option<String> {
         })
 }
 
-/// Pushes both the `.ics` calendar file and structured `routine_data.json` to a GitHub Gist atomically.
+/// Pushes the `.ics` calendar file, structured `routine_data.json`, and optional `routine_state.json` to GitHub Gist.
 ///
 /// Priority:
 /// 1. If `GITHUB_TOKEN` or `GH_TOKEN` is set in the environment, uses the native GitHub REST API (`PATCH /gists/:id`).
@@ -35,10 +35,11 @@ fn resolve_github_token() -> Option<String> {
 ///
 /// # Errors
 /// Returns an error message if both GitHub API and `gh` CLI fail or are unavailable.
-pub async fn sync_gist_bundle(
+pub async fn sync_gist_bundle_with_state(
     gist_id: &str,
     ics_path: &Path,
     json_path: &Path,
+    state_path: Option<&Path>,
 ) -> Result<String, String> {
     let ics_content = fs::read_to_string(ics_path)
         .map_err(|e| format!("Failed to read .ics file at '{}': {e}", ics_path.display()))?;
@@ -56,19 +57,33 @@ pub async fn sync_gist_bundle(
         .and_then(|n| n.to_str())
         .unwrap_or("routine_data.json");
 
+    let state_content = if let Some(sp) = state_path {
+        fs::read_to_string(sp).ok()
+    } else {
+        None
+    };
+
     let token = resolve_github_token();
 
     if let Some(token) = token {
         let client = reqwest::Client::new();
-        let payload = serde_json::json!({
-            "files": {
-                ics_filename: {
-                    "content": ics_content
-                },
-                json_filename: {
-                    "content": json_content
-                }
+        let mut files_obj = serde_json::json!({
+            ics_filename: {
+                "content": ics_content
+            },
+            json_filename: {
+                "content": json_content
             }
+        });
+
+        if let Some(sc) = state_content {
+            if let Some(obj) = files_obj.as_object_mut() {
+                obj.insert("routine_state.json".to_string(), serde_json::json!({ "content": sc }));
+            }
+        }
+
+        let payload = serde_json::json!({
+            "files": files_obj
         });
 
         let url = format!("https://api.github.com/gists/{gist_id}");
@@ -128,6 +143,15 @@ pub async fn sync_gist_bundle(
     Ok(format!(
         "https://gist.githubusercontent.com/raw/{gist_id}/{ics_filename}"
     ))
+}
+
+/// Backward-compatible wrapper pushing both the `.ics` calendar file and structured `routine_data.json` to GitHub Gist.
+pub async fn sync_gist_bundle(
+    gist_id: &str,
+    ics_path: &Path,
+    json_path: &Path,
+) -> Result<String, String> {
+    sync_gist_bundle_with_state(gist_id, ics_path, json_path, None).await
 }
 
 /// Pushes the generated `.ics` calendar file to a GitHub Gist.
@@ -263,4 +287,69 @@ pub async fn fetch_gist_routine_data(gist_id: &str) -> Result<String, String> {
     resp.text()
         .await
         .map_err(|e| format!("Failed to read Gist response body: {e}"))
+}
+
+/// Fetches the latest `routine_state.json` content from the specified GitHub Gist if present.
+///
+/// # Errors
+/// Returns an error message if the file is missing from Gist or network request fails.
+pub async fn fetch_gist_state_data(gist_id: &str) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let token = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GH_TOKEN"))
+        .ok();
+
+    // 1. Try GitHub REST API first
+    let api_url = format!("https://api.github.com/gists/{gist_id}");
+    let mut req = client
+        .get(&api_url)
+        .header("User-Agent", "academic-routine-engine/0.1.0")
+        .header("Accept", "application/vnd.github+json");
+
+    if let Some(ref t) = token {
+        req = req.header("Authorization", format!("Bearer {}", t.trim()));
+    }
+
+    if let Ok(resp) = req.send().await {
+        if resp.status().is_success() {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if let Some(content) = data
+                    .get("files")
+                    .and_then(|f| f.get("routine_state.json"))
+                    .and_then(|f| f.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    return Ok(content.to_string());
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to raw gist URL
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let raw_url = format!(
+        "https://gist.githubusercontent.com/raw/{gist_id}/routine_state.json?t={ts}"
+    );
+
+    let resp = client
+        .get(&raw_url)
+        .header("User-Agent", "academic-routine-engine/0.1.0")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch routine_state.json from Gist raw URL: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Gist raw download for routine_state.json failed with HTTP status {}",
+            resp.status()
+        ));
+    }
+
+    resp.text()
+        .await
+        .map_err(|e| format!("Failed to read Gist routine_state response: {e}"))
 }

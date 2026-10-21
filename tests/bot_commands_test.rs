@@ -15,11 +15,34 @@ fn test_all_bot_commands_syntax_parsing() {
     assert_eq!(Command::parse("/tomorrow", "").unwrap(), Command::Tomorrow);
     assert_eq!(Command::parse("/free", "").unwrap(), Command::Free);
     assert_eq!(Command::parse("/teachers", "").unwrap(), Command::Teachers);
+    assert_eq!(Command::parse("/status", "").unwrap(), Command::Status);
+    assert_eq!(Command::parse("/completed", "").unwrap(), Command::Completed);
+    assert_eq!(Command::parse("/finished", "").unwrap(), Command::Finished);
     assert_eq!(Command::parse("/dropped", "").unwrap(), Command::Dropped);
     assert_eq!(Command::parse("/calendar", "").unwrap(), Command::Calendar);
     assert_eq!(Command::parse("/sync", "").unwrap(), Command::Sync);
 
     // 2. Commands with arguments
+    assert_eq!(
+        Command::parse("/complete CSE-4125", "").unwrap(),
+        Command::Complete("CSE-4125".to_string())
+    );
+    assert_eq!(
+        Command::parse("/finish CSE-4125", "").unwrap(),
+        Command::Finish("CSE-4125".to_string())
+    );
+    assert_eq!(
+        Command::parse("/resume CSE-4125", "").unwrap(),
+        Command::Resume("CSE-4125".to_string())
+    );
+    assert_eq!(
+        Command::parse("/alerts off", "").unwrap(),
+        Command::Alerts("off".to_string())
+    );
+    assert_eq!(
+        Command::parse("/vacation until 2026-11-15", "").unwrap(),
+        Command::Vacation("until 2026-11-15".to_string())
+    );
     assert_eq!(
         Command::parse("/drop CSE-4125", "").unwrap(),
         Command::Drop("CSE-4125".to_string())
@@ -188,6 +211,7 @@ fn test_bot_context_lifecycle_and_calendar_sync() {
         routine_path: scraper_path,
         state_path: state_path.clone(),
         section: Some("B2".to_string()),
+        no_http: true,
     };
 
     // Load active schedule

@@ -22,8 +22,9 @@ pub use engine::{
     IngestError, ScraperError,
 };
 pub use exporters::{
-    export_ics_file, fetch_gist_routine_data, generate_ics, render_day_table, render_today_card,
-    render_weekly_overview, sync_gist_bundle, sync_gist_file,
+    export_ics_file, fetch_gist_routine_data, fetch_gist_state_data, generate_ics, render_day_table,
+    render_today_card, render_weekly_overview, sync_gist_bundle, sync_gist_bundle_with_state,
+    sync_gist_file,
 };
 pub use model::{
     academic_now, current_academic_day, next_academic_day, CourseEntry, DayOfWeek, ParseDayError,

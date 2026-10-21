@@ -34,9 +34,7 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
         eprintln!("Pre-briefing Gist sync note: {e}");
     }
 
-    let today = current_academic_day();
-
-    let (sched, _) = match ctx.load_active_schedule() {
+    let (sched, mut state) = match ctx.load_active_schedule() {
         Ok(res) => res,
         Err(e) => {
             eprintln!("Scheduler error loading schedule: {e}");
@@ -44,6 +42,17 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
         }
     };
 
+    if state.is_vacation_active() {
+        println!("⏰ Scheduler: Vacation mode is active. Skipping 06:00 AM morning briefing.");
+        return;
+    }
+
+    if !state.morning_alerts {
+        println!("⏰ Scheduler: Morning alerts paused by user. Skipping 06:00 AM morning briefing.");
+        return;
+    }
+
+    let today = current_academic_day();
     let classes = sched.for_day(today);
     if classes.is_empty() {
         return; // Don't disturb on days without classes

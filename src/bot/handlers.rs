@@ -40,21 +40,45 @@ pub enum Command {
     /// Instructor contact directory
     #[command(description = "List instructors with phone numbers and emails")]
     Teachers,
-    /// Drop a course (e.g. /drop CSE-4101)
-    #[command(description = "Drop a course (e.g. /drop CSE-4101)")]
-    Drop(String),
-    /// Restore a dropped course (e.g. /restore CSE-4101)
-    #[command(description = "Restore a dropped course (e.g. /restore CSE-4101)")]
-    Restore(String),
-    /// List all currently dropped courses
-    #[command(description = "List all currently dropped/hidden courses")]
-    Dropped,
+    /// Display subsystem health card and alert settings
+    #[command(description = "Show routine status, active alerts, vacation mode, and synced feeds")]
+    Status,
+    /// Complete a course whose syllabus is finished (e.g. /complete CSE-4125)
+    #[command(description = "Mark a course whose syllabus is done as completed")]
+    Complete(String),
+    /// List all courses marked as completed for the semester
+    #[command(description = "List all courses marked as completed")]
+    Completed,
+    /// Resume an active schedule for a completed course (e.g. /resume CSE-4125)
+    #[command(description = "Resume an active schedule for a completed course")]
+    Resume(String),
+    /// Toggle 6:00 AM morning briefings (/alerts on, /alerts off, /alerts status)
+    #[command(description = "Toggle 6:00 AM daily briefing notifications (on/off/status)")]
+    Alerts(String),
+    /// Manage vacation / semester break mode (/vacation on, /vacation off, /vacation until YYYY-MM-DD)
+    #[command(description = "Manage vacation / semester break mode (on/off/until)")]
+    Vacation(String),
     /// Send .ics calendar file for 1-tap phone importing
     #[command(description = "Send routine.ics file directly to chat for 1-tap calendar import")]
     Calendar,
     /// Refresh routine directly from UCAM portal and sync calendar
     #[command(description = "Refresh routine directly from UCAM portal and update calendar")]
     Sync,
+    /// Alias for /complete (e.g. /finish CSE-4125)
+    #[command(description = "Alias for /complete")]
+    Finish(String),
+    /// Alias for /completed
+    #[command(description = "Alias for /completed")]
+    Finished,
+    /// Alias for /complete (e.g. /drop CSE-4101)
+    #[command(description = "Alias for /complete")]
+    Drop(String),
+    /// Alias for /resume (e.g. /restore CSE-4101)
+    #[command(description = "Alias for /resume")]
+    Restore(String),
+    /// Alias for /completed
+    #[command(description = "Alias for /completed")]
+    Dropped,
 }
 
 /// Shared runtime context for the Telegram bot.
@@ -66,6 +90,8 @@ pub struct BotContext {
     pub state_path: PathBuf,
     /// Default student section (e.g. "B2").
     pub section: Option<String>,
+    /// Whether to disable the HTTP health check server.
+    pub no_http: bool,
 }
 
 impl BotContext {
@@ -92,20 +118,39 @@ impl BotContext {
             .map_err(|e| format!("Failed to export .ics: {e}"))?;
 
         if let Some(ref gid) = state.gist_id {
+            if self.routine_path.exists() {
+                return crate::exporters::gist::sync_gist_bundle_with_state(
+                    gid,
+                    &ics_path,
+                    &self.routine_path,
+                    Some(&self.state_path),
+                )
+                .await;
+            }
             return crate::exporters::gist::sync_gist_file(gid, &ics_path).await;
         }
 
         Ok("routine.ics".to_string())
     }
 
-    /// Refreshes routine_data.json from GitHub Gist, writes it locally, and updates calendar feed.
+    /// Refreshes routine_data.json and routine_state.json from GitHub Gist, writes locally, and updates calendar feed.
     pub async fn refresh_from_gist(&self) -> Result<String, String> {
-        let state = RoutineState::load_or_default(&self.state_path).unwrap_or_default();
+        let mut state = RoutineState::load_or_default(&self.state_path).unwrap_or_default();
         let gid = match state.gist_id.as_deref() {
             Some(id) => id.to_string(),
             None => std::env::var("GIST_ID")
                 .map_err(|_| "No Gist ID configured in state or environment.".to_string())?,
         };
+
+        // If routine_state.json is present on Gist, sync state fields
+        if let Ok(state_json) = crate::exporters::gist::fetch_gist_state_data(&gid).await {
+            if let Ok(remote_state) = serde_json::from_str::<RoutineState>(&state_json) {
+                for d in remote_state.dropped_courses {
+                    state.drop_course(&d);
+                }
+                let _ = state.save(&self.state_path);
+            }
+        }
 
         let json_content = crate::exporters::gist::fetch_gist_routine_data(&gid).await?;
 
@@ -133,6 +178,20 @@ pub async fn handle_command(
 ) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
 
+    // Auto-cache user handle/name in routine_state.json if available
+    if let Some(user) = &msg.from {
+        let handle = user
+            .username
+            .as_ref()
+            .map(|u| format!("@{u}"))
+            .unwrap_or_else(|| user.first_name.clone());
+        let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+        if state.telegram_username.as_deref() != Some(&handle) {
+            state.telegram_username = Some(handle);
+            let _ = state.save(&ctx.state_path);
+        }
+    }
+
     match cmd {
         Command::Help | Command::Start => {
             let help_text = format!(
@@ -142,9 +201,10 @@ pub async fn handle_command(
                  • Send <code>/today</code> to see your schedule for today.\n\
                  • Send <code>/next</code> to see what class is coming up next.\n\
                  • Send <code>/tomorrow</code> to preview tomorrow's classes.\n\
-                 • Send <code>/free</code> to find breaks between classes.\n\
-                 • Send <code>/calendar</code> to receive the .ics file on your phone!\n\
-                 • Send <code>/drop &lt;CODE&gt;</code> to drop a course on the fly.",
+                 • Send <code>/status</code> to check system health, alerts, and vacation mode.\n\
+                 • Send <code>/complete &lt;CODE&gt;</code> when a course syllabus is done.\n\
+                 • Send <code>/alerts off</code> to pause 6:00 AM morning briefings.\n\
+                 • Send <code>/vacation on</code> during semester breaks.",
                 escape_html(&Command::descriptions().to_string())
             );
             bot.send_message(chat_id, help_text)
@@ -152,8 +212,75 @@ pub async fn handle_command(
                 .await?;
         }
 
+        Command::Status => {
+            let (sched, mut state) = match ctx.load_active_schedule() {
+                Ok(res) => res,
+                Err(e) => {
+                    bot.send_message(chat_id, format!("❌ {e}")).await?;
+                    return Ok(());
+                }
+            };
+
+            let user_display = state
+                .telegram_username
+                .as_deref()
+                .map(|u| format!("{u} [Chat {chat_id}]"))
+                .unwrap_or_else(|| format!("Chat {chat_id}"));
+
+            let vacation_str = if state.is_vacation_active() {
+                if let Some(until) = state.vacation_until {
+                    format!("🏖️ <b>ACTIVE</b> (until {until})")
+                } else {
+                    "🏖️ <b>ACTIVE</b> (Semester Break)".to_string()
+                }
+            } else {
+                "<b>INACTIVE</b> (Normal Semester)".to_string()
+            };
+
+            let alerts_str = if state.morning_alerts {
+                format!("🔔 <b>ENABLED</b> (06:00 AM to {user_display})")
+            } else {
+                "🔕 <b>PAUSED</b> (/alerts on to resume)".to_string()
+            };
+
+            let completed_count = state.dropped_courses.len();
+            let gist_status = if let Some(ref gid) = state.gist_id {
+                let short = &gid[..8.min(gid.len())];
+                format!("Linked (<code>{short}...</code>)")
+            } else {
+                "Not linked".to_string()
+            };
+
+            let sheet_name = std::env::var("SPREADSHEET_NAME")
+                .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
+
+            let text = format!(
+                "🎓 <b>Academic Routine Assistant Status</b>\n\n\
+                 📁 <b>Semester:</b> <code>{}</code>\n\
+                 🛡️ <b>Courses:</b> {} active ({} completed)\n\
+                 🏖️ <b>Vacation:</b> {}\n\
+                 🔔 <b>Morning Alerts:</b> {}\n\n\
+                 <b>--- Integrations ---</b>\n\
+                 🔗 <b>Gist Feed:</b> {}\n\
+                 📊 <b>Google Sheets:</b> <code>{}</code>\n\
+                 🤖 <b>Bot Daemon:</b> Online &amp; Listening\n\n\
+                 <i>💡 Send /alerts, /vacation, or /complete anytime to adjust.</i>",
+                escape_html(&sched.semester_name),
+                sched.entries.len(),
+                completed_count,
+                vacation_str,
+                alerts_str,
+                gist_status,
+                escape_html(&sheet_name),
+            );
+
+            bot.send_message(chat_id, text)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+
         Command::Today => {
-            let (sched, _) = match ctx.load_active_schedule() {
+            let (sched, mut state) = match ctx.load_active_schedule() {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -164,20 +291,28 @@ pub async fn handle_command(
             let today = current_academic_day();
             let classes = sched.for_day(today);
 
+            let vacation_banner = if state.is_vacation_active() {
+                "🏖️ <b>Vacation Mode Active (Semester Break)</b>\n<i>No official routine classes scheduled. Send /vacation off to resume normal alerts.</i>\n\n"
+            } else {
+                ""
+            };
+
             if classes.is_empty() {
                 bot.send_message(
                     chat_id,
                     format!(
-                        "🎉 No classes scheduled for today ({})! Enjoy your free time.",
+                        "{vacation_banner}🎉 No classes scheduled for today ({})! Enjoy your free time.",
                         today.full_name()
                     ),
                 )
+                .parse_mode(ParseMode::Html)
                 .await?;
                 return Ok(());
             }
 
             let mut text = format!(
-                "📅 <b>Schedule for Today ({})</b> — {} class(es)\n\n",
+                "{}📅 <b>Schedule for Today ({})</b> — {} class(es)\n\n",
+                vacation_banner,
                 today.full_name(),
                 classes.len()
             );
@@ -204,13 +339,23 @@ pub async fn handle_command(
         }
 
         Command::Next => {
-            let (sched, _) = match ctx.load_active_schedule() {
+            let (sched, mut state) = match ctx.load_active_schedule() {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
                     return Ok(());
                 }
             };
+
+            if state.is_vacation_active() {
+                bot.send_message(
+                    chat_id,
+                    "🏖️ <b>Vacation Mode Active (Semester Break)</b>\nNo classes are currently scheduled. Send <code>/vacation off</code> when classes resume.",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+                return Ok(());
+            }
 
             let today = current_academic_day();
             let now = academic_now().time();
@@ -411,12 +556,12 @@ pub async fn handle_command(
                 .await?;
         }
 
-        Command::Drop(code) => {
+        Command::Complete(code) | Command::Finish(code) | Command::Drop(code) => {
             let clean_code = code.trim().to_uppercase();
             if clean_code.is_empty() {
                 bot.send_message(
                     chat_id,
-                    "⚠️ Please provide a course code to drop (e.g. <code>/drop CSE-4101</code>)",
+                    "⚠️ Please provide a course code to complete (e.g. <code>/complete CSE-4125</code>)",
                 )
                 .parse_mode(ParseMode::Html)
                 .await?;
@@ -424,7 +569,7 @@ pub async fn handle_command(
             }
 
             let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-            if state.drop_course(&clean_code) {
+            if state.complete_course(&clean_code) {
                 let _ = state.save(&ctx.state_path);
                 let sync_msg = match ctx.regenerate_and_sync().await {
                     Ok(url) => format!(
@@ -435,9 +580,9 @@ pub async fn handle_command(
                 };
 
                 let resp = format!(
-                    "✅ <b>Dropped course <code>{}</code>!</b>\n\
-                     It has been excluded from your schedule, Telegram alerts, and .ics feed.{}\n\n\
-                     <i>To undo, send <code>/restore {}</code></i>",
+                    "🏁 <b>Marked course <code>{}</code> as completed!</b>\n\
+                     Its classes are now hidden from your schedule, 6:00 AM daily briefings, and .ics calendar feed.{}\n\n\
+                     <i>To resume, send <code>/resume {}</code></i>",
                     clean_code, sync_msg, clean_code
                 );
                 bot.send_message(chat_id, resp)
@@ -446,24 +591,27 @@ pub async fn handle_command(
             } else {
                 bot.send_message(
                     chat_id,
-                    format!("ℹ️ Course <code>{clean_code}</code> is already marked as dropped."),
+                    format!("ℹ️ Course <code>{clean_code}</code> is already marked as completed."),
                 )
                 .parse_mode(ParseMode::Html)
                 .await?;
             }
         }
 
-        Command::Restore(code) => {
+        Command::Resume(code) | Command::Restore(code) => {
             let clean_code = code.trim().to_uppercase();
             if clean_code.is_empty() {
-                bot.send_message(chat_id, "⚠️ Please provide a course code to restore (e.g. <code>/restore CSE-4101</code>)")
-                    .parse_mode(ParseMode::Html)
-                    .await?;
+                bot.send_message(
+                    chat_id,
+                    "⚠️ Please provide a course code to resume (e.g. <code>/resume CSE-4125</code>)",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
                 return Ok(());
             }
 
             let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-            if state.restore_course(&clean_code) {
+            if state.resume_course(&clean_code) {
                 let _ = state.save(&ctx.state_path);
                 let sync_msg = match ctx.regenerate_and_sync().await {
                     Ok(url) => format!(
@@ -474,8 +622,8 @@ pub async fn handle_command(
                 };
 
                 let resp = format!(
-                    "✅ <b>Restored course <code>{}</code>!</b>\n\
-                     It will now appear on your schedule and calendar exports.{}",
+                    "✅ <b>Resumed course <code>{}</code>!</b>\n\
+                     It will now appear on your active routine, morning briefings, and calendar exports.{}",
                     clean_code, sync_msg
                 );
                 bot.send_message(chat_id, resp)
@@ -484,29 +632,164 @@ pub async fn handle_command(
             } else {
                 bot.send_message(
                     chat_id,
-                    format!("ℹ️ Course <code>{clean_code}</code> was not in the dropped list."),
+                    format!("ℹ️ Course <code>{clean_code}</code> was not in the completed list."),
                 )
                 .parse_mode(ParseMode::Html)
                 .await?;
             }
         }
 
-        Command::Dropped => {
+        Command::Completed | Command::Finished | Command::Dropped => {
             let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
             if state.dropped_courses.is_empty() {
-                bot.send_message(chat_id, "ℹ️ No courses are currently dropped.")
+                bot.send_message(chat_id, "ℹ️ No courses are currently marked as completed.")
                     .await?;
             } else {
-                let mut text = "🚫 <b>Currently Dropped Courses:</b>\n\n".to_string();
+                let mut text = "🎓 <b>Currently Completed Courses:</b>\n\n".to_string();
                 for c in &state.dropped_courses {
                     text.push_str(&format!("• <code>{}</code>\n", escape_html(c)));
                 }
                 text.push_str(
-                    "\n<i>Send <code>/restore &lt;CODE&gt;</code> to re-enable any course.</i>",
+                    "\n<i>Send <code>/resume &lt;CODE&gt;</code> to re-activate any course.</i>",
                 );
                 bot.send_message(chat_id, text)
                     .parse_mode(ParseMode::Html)
                     .await?;
+            }
+        }
+
+        Command::Alerts(action) => {
+            let clean = action.trim().to_lowercase();
+            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+
+            match clean.as_str() {
+                "off" | "pause" | "mute" | "stop" => {
+                    state.set_morning_alerts(false);
+                    let _ = state.save(&ctx.state_path);
+                    let _ = ctx.regenerate_and_sync().await;
+                    bot.send_message(
+                        chat_id,
+                        "🔕 <b>Proactive Morning Briefings Paused!</b>\n\
+                         You will not receive 6:00 AM daily alerts.\n\n\
+                         <i>Send <code>/alerts on</code> to resume at any time.</i>",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+                "on" | "resume" | "unmute" | "start" => {
+                    state.set_morning_alerts(true);
+                    let _ = state.save(&ctx.state_path);
+                    let _ = ctx.regenerate_and_sync().await;
+                    bot.send_message(
+                        chat_id,
+                        "🔔 <b>Proactive Morning Briefings Resumed!</b>\n\
+                         You will receive daily briefings at 06:00 AM on class days.",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+                _ => {
+                    let status = if state.morning_alerts {
+                        "🔔 <b>ACTIVE</b> (06:00 AM on class days)"
+                    } else {
+                        "🔕 <b>PAUSED</b> (no alerts)"
+                    };
+                    bot.send_message(
+                        chat_id,
+                        format!(
+                            "⏰ <b>Morning Briefing Settings</b>\n\n\
+                             Status: {}\n\n\
+                             • Send <code>/alerts off</code> to pause.\n\
+                             • Send <code>/alerts on</code> to resume.",
+                            status
+                        ),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+            }
+        }
+
+        Command::Vacation(param) => {
+            let clean = param.trim();
+            let lower = clean.to_lowercase();
+            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+
+            if lower.starts_with("off") || lower.starts_with("resume") || lower.starts_with("stop") {
+                state.set_vacation(false, None);
+                let _ = state.save(&ctx.state_path);
+                let _ = ctx.regenerate_and_sync().await;
+                bot.send_message(
+                    chat_id,
+                    "🎒 <b>Welcome Back! Vacation Mode Deactivated.</b>\n\
+                     Normal class queries, countdowns, and 6:00 AM morning briefings are now active.",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+            } else if lower.starts_with("on") || lower.starts_with("start") {
+                state.set_vacation(true, None);
+                let _ = state.save(&ctx.state_path);
+                let _ = ctx.regenerate_and_sync().await;
+                bot.send_message(
+                    chat_id,
+                    "🏖️ <b>Vacation / Semester Break Mode Activated!</b>\n\
+                     6:00 AM morning briefings and class alerts are paused.\n\n\
+                     <i>Send <code>/vacation off</code> when classes resume.</i>",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+            } else if lower.starts_with("until") {
+                let date_str = clean.trim_start_matches("until").trim();
+                match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                    Ok(until) => {
+                        state.set_vacation(true, Some(until));
+                        let _ = state.save(&ctx.state_path);
+                        let _ = ctx.regenerate_and_sync().await;
+                        bot.send_message(
+                            chat_id,
+                            format!(
+                                "🏖️ <b>Vacation Mode Activated until {}!</b>\n\
+                                 Morning alerts and class reminders will automatically resume after this date.\n\n\
+                                 <i>Send <code>/vacation off</code> anytime to cancel early.</i>",
+                                until
+                            ),
+                        )
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                    }
+                    Err(_) => {
+                        bot.send_message(
+                            chat_id,
+                            "⚠️ Invalid date format. Use <code>YYYY-MM-DD</code> (e.g. <code>/vacation until 2026-11-15</code>).",
+                        )
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                    }
+                }
+            } else {
+                let status = if state.is_vacation_active() {
+                    if let Some(until) = state.vacation_until {
+                        format!("🏖️ <b>ACTIVE</b> (until {until})")
+                    } else {
+                        "🏖️ <b>ACTIVE</b> (Semester Break)".to_string()
+                    }
+                } else {
+                    "🎒 <b>INACTIVE</b> (Normal Semester)".to_string()
+                };
+
+                bot.send_message(
+                    chat_id,
+                    format!(
+                        "🏖️ <b>Vacation / Semester Break Mode</b>\n\n\
+                         Status: {}\n\n\
+                         • Send <code>/vacation on</code> to pause all class alerts.\n\
+                         • Send <code>/vacation until YYYY-MM-DD</code> to pause until a date.\n\
+                         • Send <code>/vacation off</code> to resume normal classes.",
+                        status
+                    ),
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
             }
         }
 
@@ -683,6 +966,7 @@ mod tests {
             routine_path: scraper_path,
             state_path: state_path.clone(),
             section: Some("B2".to_string()),
+            no_http: true,
         };
 
         // 1. Initial load with section B2

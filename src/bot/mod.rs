@@ -45,29 +45,62 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
             tokio::spawn(async move {
                 start_morning_scheduler(sched_bot, chat_id, sched_ctx).await;
             });
-            println!("🔔 Proactive 06:00 AM morning briefings active for Chat ID: {chat_id}");
+
+            // Inspect Telegram handle on startup to cache into routine_state.json
+            let info_bot = bot.clone();
+            let state_file = shared_ctx.state_path.clone();
+            tokio::spawn(async move {
+                if let Ok(chat) = info_bot.get_chat(teloxide::types::ChatId(chat_id)).await {
+                    let handle = chat
+                        .username()
+                        .map(|u| format!("@{u}"))
+                        .or_else(|| chat.first_name().map(|n| n.to_string()));
+                    if let Some(h) = handle {
+                        let mut state =
+                            crate::model::state::RoutineState::load_or_default(&state_file)
+                                .unwrap_or_default();
+                        if state.telegram_username.as_deref() != Some(&h) {
+                            state.telegram_username = Some(h.clone());
+                            let _ = state.save(&state_file);
+                        }
+                    }
+                }
+            });
+
+            let state = crate::model::state::RoutineState::load_or_default(&shared_ctx.state_path)
+                .unwrap_or_default();
+            let user_info = state
+                .telegram_username
+                .as_deref()
+                .map(|u| format!("{u} [Chat {chat_id}]"))
+                .unwrap_or_else(|| format!("Chat ID: {chat_id}"));
+            println!("🔔 Proactive 06:00 AM morning briefings active for {user_info}");
         }
     }
 
-    // Spawn lightweight HTTP health check server for cloud platforms (e.g. Render)
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
-    tokio::spawn(async move {
-        let addr = format!("0.0.0.0:{port}");
-        if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
-            println!("🌐 Cloud health check server listening on {addr}");
-            loop {
-                if let Ok((mut stream, _)) = listener.accept().await {
-                    tokio::spawn(async move {
-                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                        let mut buf = [0u8; 512];
-                        let _ = stream.read(&mut buf).await;
-                        let resp = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 16\r\nConnection: close\r\n\r\nBot is healthy!\n";
-                        let _ = stream.write_all(resp).await;
-                    });
+    // Spawn lightweight HTTP health check server for cloud platforms (e.g. Render) unless disabled
+    if !shared_ctx.no_http && std::env::var("DISABLE_HTTP_HEALTHCHECK").is_err() {
+        let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
+        if port != "0" {
+            tokio::spawn(async move {
+                let addr = format!("0.0.0.0:{port}");
+                if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
+                    println!("🌐 Cloud health check server listening on {addr}");
+                    loop {
+                        if let Ok((mut stream, _)) = listener.accept().await {
+                            tokio::spawn(async move {
+                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                                let mut buf = [0u8; 512];
+                                let _ = stream.read(&mut buf).await;
+                                let resp = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 16\r\nConnection: close\r\n\r\nBot is healthy!\n";
+                                let _ = stream.write_all(resp).await;
+                            });
+                        }
+                    }
                 }
-            }
+            });
         }
-    });
+    }
 
     // Check if initial routine sync is needed on fresh cloud deployment
     if !shared_ctx.routine_path.exists() {
