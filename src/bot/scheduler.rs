@@ -144,7 +144,7 @@ pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc
             if start_mins >= now_mins {
                 let diff = start_mins - now_mins;
                 // Alert in the 29-30 minute window
-                if diff <= 30 && diff >= 29 && !notified_sessions.contains(&session_id) {
+                if (29..=30).contains(&diff) && !notified_sessions.contains(&session_id) {
                     notified_sessions.insert(session_id);
 
                     let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };

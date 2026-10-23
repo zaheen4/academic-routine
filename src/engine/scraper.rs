@@ -59,10 +59,15 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
         .ok_or(ScraperError::PythonNotFound)?;
 
     // 2. Resolve script path
-    let script_candidates = [
-        PathBuf::from("scraper/extract_ucam.py"),
-        PathBuf::from("/home/eyepatch/Documents/projects/academic-routine/scraper/extract_ucam.py"),
-    ];
+    let mut script_candidates = vec![PathBuf::from("scraper/extract_ucam.py")];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            script_candidates.push(parent.join("scraper/extract_ucam.py"));
+            if let Some(grandparent) = parent.parent() {
+                script_candidates.push(grandparent.join("scraper/extract_ucam.py"));
+            }
+        }
+    }
 
     let script_path = script_candidates
         .into_iter()
@@ -142,10 +147,15 @@ pub fn run_gsheet_sync(data_path: &Path) -> Result<(), ScraperError> {
         .find(|p| p.exists() || is_executable_available(p.to_str().unwrap_or("python3")))
         .ok_or(ScraperError::PythonNotFound)?;
 
-    let script_candidates = [
-        PathBuf::from("scraper/sync_gsheet.py"),
-        PathBuf::from("/home/eyepatch/Documents/projects/academic-routine/scraper/sync_gsheet.py"),
-    ];
+    let mut script_candidates = vec![PathBuf::from("scraper/sync_gsheet.py")];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            script_candidates.push(parent.join("scraper/sync_gsheet.py"));
+            if let Some(grandparent) = parent.parent() {
+                script_candidates.push(grandparent.join("scraper/sync_gsheet.py"));
+            }
+        }
+    }
 
     let script_path = script_candidates
         .into_iter()

@@ -3,12 +3,113 @@
 use crate::model::day::academic_now;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 fn default_true() -> bool {
     true
+}
+
+/// Official university attendance eligibility status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttendanceStatus {
+    /// Attendance >= 75%: Eligible for semester final exams without fine.
+    Collegiate,
+    /// 60% <= Attendance < 75%: Eligible with fine/penalty.
+    NonCollegiate,
+    /// Attendance < 60%: Disqualified from sitting for finals.
+    DisCollegiate,
+}
+
+impl std::fmt::Display for AttendanceStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Collegiate => write!(f, "Collegiate"),
+            Self::NonCollegiate => write!(f, "Non-Collegiate"),
+            Self::DisCollegiate => write!(f, "Dis-Collegiate"),
+        }
+    }
+}
+
+/// Class attendance record for an individual course.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AttendanceRecord {
+    /// Number of classes attended.
+    pub attended: u32,
+    /// Number of classes missed.
+    pub missed: u32,
+}
+
+impl AttendanceRecord {
+    /// Total number of classes conducted.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.attended + self.missed
+    }
+
+    /// Current attendance percentage (0.0% to 100.0%).
+    #[must_use]
+    pub fn percentage(&self) -> f64 {
+        let tot = self.total();
+        if tot == 0 {
+            100.0
+        } else {
+            (self.attended as f64 / tot as f64) * 100.0
+        }
+    }
+
+    /// Evaluates current academic collegiate status.
+    #[must_use]
+    pub fn status(&self) -> AttendanceStatus {
+        let pct = self.percentage();
+        if pct >= 75.0 {
+            AttendanceStatus::Collegiate
+        } else if pct >= 60.0 {
+            AttendanceStatus::NonCollegiate
+        } else {
+            AttendanceStatus::DisCollegiate
+        }
+    }
+
+    /// Number of consecutive future classes the student can safely miss while remaining Collegiate (>= 75%).
+    #[must_use]
+    pub fn safe_bunks(&self) -> u32 {
+        let a = self.attended as i64;
+        let m = self.missed as i64;
+        let diff = a - 3 * m;
+        if diff <= 0 {
+            0
+        } else {
+            (diff / 3) as u32
+        }
+    }
+
+    /// Number of consecutive future classes needed to recover to Collegiate (>= 75%).
+    #[must_use]
+    pub fn needed_for_collegiate(&self) -> u32 {
+        let a = self.attended as i64;
+        let m = self.missed as i64;
+        let diff = 3 * m - a;
+        if diff <= 0 {
+            0
+        } else {
+            diff as u32
+        }
+    }
+
+    /// Number of consecutive future classes needed to recover to Non-Collegiate (>= 60%).
+    #[must_use]
+    pub fn needed_for_non_collegiate(&self) -> u32 {
+        let a = self.attended as i64;
+        let m = self.missed as i64;
+        let diff = 3 * m - 2 * a;
+        if diff <= 0 {
+            0
+        } else {
+            ((diff + 1) / 2) as u32
+        }
+    }
 }
 
 /// Error returned when loading or saving [`RoutineState`].
@@ -64,6 +165,14 @@ pub struct RoutineState {
     /// Cached Telegram username or display handle.
     #[serde(default)]
     pub telegram_username: Option<String>,
+
+    /// Map of Telegram Chat ID -> preferred section ("B1", "B2", or "ALL").
+    #[serde(default)]
+    pub user_sections: HashMap<i64, String>,
+
+    /// Map of Telegram Chat ID -> (Course Code -> AttendanceRecord).
+    #[serde(default)]
+    pub user_attendance: HashMap<i64, HashMap<String, AttendanceRecord>>,
 }
 
 impl Default for RoutineState {
@@ -79,6 +188,8 @@ impl Default for RoutineState {
             auto_sync_gist: true,
             auto_sync_gsheet: true,
             telegram_username: None,
+            user_sections: HashMap::new(),
+            user_attendance: HashMap::new(),
         }
     }
 }
@@ -206,6 +317,119 @@ impl RoutineState {
     /// Enables or disables automatic Google Sheets sync.
     pub fn set_sync_gsheet(&mut self, enabled: bool) {
         self.auto_sync_gsheet = enabled;
+    }
+
+    /// Retrieves user's section preference for a given chat, if set.
+    #[must_use]
+    pub fn get_user_section(&self, chat_id: i64) -> Option<&str> {
+        self.user_sections.get(&chat_id).map(|s| s.as_str())
+    }
+
+    /// Sets a user's section preference ("B1", "B2", or "ALL").
+    pub fn set_user_section(&mut self, chat_id: i64, section: &str) {
+        self.user_sections
+            .insert(chat_id, section.trim().to_uppercase());
+    }
+
+    /// Clears a user's section preference, reverting to default.
+    pub fn clear_user_section(&mut self, chat_id: i64) -> bool {
+        self.user_sections.remove(&chat_id).is_some()
+    }
+
+    /// Records attendance (attended or missed) for a course in a user's chat.
+    pub fn record_attendance(
+        &mut self,
+        chat_id: i64,
+        code: &str,
+        attended: bool,
+    ) -> AttendanceRecord {
+        let clean = code.trim().to_uppercase();
+        let user_map = self.user_attendance.entry(chat_id).or_default();
+        let record = user_map.entry(clean).or_default();
+        if attended {
+            record.attended += 1;
+        } else {
+            record.missed += 1;
+        }
+        record.clone()
+    }
+
+    /// Manually sets or calibrates attendance numbers for a course in a user's chat.
+    pub fn set_attendance(
+        &mut self,
+        chat_id: i64,
+        code: &str,
+        attended: u32,
+        missed: u32,
+    ) -> AttendanceRecord {
+        let clean = code.trim().to_uppercase();
+        let user_map = self.user_attendance.entry(chat_id).or_default();
+        let record = AttendanceRecord { attended, missed };
+        user_map.insert(clean, record.clone());
+        record
+    }
+
+    /// Resets attendance records for a specific course in a user's chat.
+    pub fn reset_attendance(&mut self, chat_id: i64, code: &str) -> bool {
+        if let Some(user_map) = self.user_attendance.get_mut(&chat_id) {
+            let key = user_map
+                .keys()
+                .find(|k| codes_match(k, code))
+                .cloned();
+            if let Some(k) = key {
+                return user_map.remove(&k).is_some();
+            }
+        }
+        false
+    }
+
+    /// Resets all course attendance records for a user.
+    pub fn reset_all_attendance(&mut self, chat_id: i64) {
+        self.user_attendance.remove(&chat_id);
+    }
+
+    /// Imports attendance records from a UCAM attendance JSON file for a given chat_id.
+    pub fn import_ucam_attendance_file(&mut self, chat_id: i64, path: &Path) -> Result<usize, String> {
+        if !path.exists() {
+            return Ok(0);
+        }
+        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        #[derive(Deserialize)]
+        struct UcamAttendanceFile {
+            #[serde(default)]
+            records: Vec<UcamAttendanceItem>,
+        }
+        #[derive(Deserialize)]
+        struct UcamAttendanceItem {
+            course_code: String,
+            #[serde(default)]
+            attended: u32,
+            #[serde(default)]
+            missed: u32,
+        }
+
+        let parsed: UcamAttendanceFile = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        let count = parsed.records.len();
+        for item in parsed.records {
+            self.set_attendance(chat_id, &item.course_code, item.attended, item.missed);
+        }
+        Ok(count)
+    }
+
+    /// Gets an individual course attendance record for a user.
+    #[must_use]
+    pub fn get_attendance(&self, chat_id: i64, code: &str) -> Option<&AttendanceRecord> {
+        self.user_attendance.get(&chat_id).and_then(|m| {
+            m.iter()
+                .find(|(k, _)| codes_match(k, code))
+                .map(|(_, v)| v)
+        })
+    }
+
+    /// Gets all course attendance records for a user.
+    #[must_use]
+    pub fn get_all_attendance(&self, chat_id: i64) -> Option<&HashMap<String, AttendanceRecord>> {
+        self.user_attendance.get(&chat_id)
     }
 
     /// Loads persisted state from a file, or returns the default state if the file does not exist.
@@ -353,6 +577,8 @@ mod tests {
             auto_sync_gist: false,
             auto_sync_gsheet: false,
             telegram_username: Some("@testuser".to_string()),
+            user_sections: HashMap::new(),
+            user_attendance: HashMap::new(),
         };
         original.complete_course("CSE-4102");
 
@@ -369,5 +595,75 @@ mod tests {
         assert!(!loaded.morning_alerts);
         assert!(loaded.vacation_mode);
         assert_eq!(loaded.telegram_username, Some("@testuser".to_string()));
+    }
+
+    #[test]
+    fn test_attendance_status_and_bunk_math() {
+        // 1. Initial 0 classes: 100%, Collegiate
+        let empty = AttendanceRecord::default();
+        assert_eq!(empty.total(), 0);
+        assert_eq!(empty.percentage(), 100.0);
+        assert_eq!(empty.status(), AttendanceStatus::Collegiate);
+
+        // 2. Collegiate case: 15 attended, 2 missed (Total 17, 88.2%)
+        let rec1 = AttendanceRecord { attended: 15, missed: 2 };
+        assert_eq!(rec1.status(), AttendanceStatus::Collegiate);
+        // B = floor((15 - 6) / 3) = 3 safe bunks
+        assert_eq!(rec1.safe_bunks(), 3);
+        assert_eq!(rec1.needed_for_collegiate(), 0);
+
+        // 3. Exactly 75% case: 15 attended, 5 missed (Total 20, 75.0%)
+        let rec2 = AttendanceRecord { attended: 15, missed: 5 };
+        assert_eq!(rec2.status(), AttendanceStatus::Collegiate);
+        // B = floor((15 - 15) / 3) = 0 safe bunks
+        assert_eq!(rec2.safe_bunks(), 0);
+        assert_eq!(rec2.needed_for_collegiate(), 0);
+
+        // 4. Non-Collegiate case: 7 attended, 3 missed (Total 10, 70.0%)
+        let rec3 = AttendanceRecord { attended: 7, missed: 3 };
+        assert_eq!(rec3.status(), AttendanceStatus::NonCollegiate);
+        assert_eq!(rec3.safe_bunks(), 0);
+        // Recovery: ceil(3*3 - 7) = 2 classes needed
+        assert_eq!(rec3.needed_for_collegiate(), 2);
+
+        // 5. Dis-Collegiate case: 2 attended, 2 missed (Total 4, 50.0%)
+        let rec4 = AttendanceRecord { attended: 2, missed: 2 };
+        assert_eq!(rec4.status(), AttendanceStatus::DisCollegiate);
+        assert_eq!(rec4.safe_bunks(), 0);
+        // Recovery to Collegiate: ceil(3*2 - 2) = 4 classes needed
+        assert_eq!(rec4.needed_for_collegiate(), 4);
+        // Recovery to Non-Collegiate: ceil((3*2 - 2*2)/2) = 1 class needed
+        assert_eq!(rec4.needed_for_non_collegiate(), 1);
+    }
+
+    #[test]
+    fn test_user_section_and_attendance_state_lifecycle() {
+        let mut state = RoutineState::default();
+        let user_a = 12345;
+        let user_b = 67890;
+
+        // User A picks B1, User B picks B2
+        state.set_user_section(user_a, "b1");
+        state.set_user_section(user_b, "B2");
+        assert_eq!(state.get_user_section(user_a), Some("B1"));
+        assert_eq!(state.get_user_section(user_b), Some("B2"));
+
+        // Attendance logging per user
+        state.record_attendance(user_a, "CSE-4101", true);
+        state.record_attendance(user_a, "CSE-4101", true);
+        state.record_attendance(user_a, "CSE-4101", false);
+        let rec_a = state.get_attendance(user_a, "cse-4101").unwrap();
+        assert_eq!(rec_a.attended, 2);
+        assert_eq!(rec_a.missed, 1);
+
+        // User B has no records for CSE-4101 yet
+        assert!(state.get_attendance(user_b, "CSE-4101").is_none());
+
+        // Calibrate User B directly
+        state.set_attendance(user_b, "CSE-4101", 10, 1);
+        let rec_b = state.get_attendance(user_b, "CSE-4101").unwrap();
+        assert_eq!(rec_b.attended, 10);
+        assert_eq!(rec_b.missed, 1);
+        assert_eq!(rec_b.safe_bunks(), 2);
     }
 }

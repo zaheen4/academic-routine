@@ -6,7 +6,7 @@ use crate::exporters::ics::export_ics_file;
 use crate::model::course::{CourseEntry, TeacherContact};
 use crate::model::day::{academic_now, current_academic_day, next_academic_day, DayOfWeek};
 use crate::model::schedule::Schedule;
-use crate::model::state::RoutineState;
+use crate::model::state::{codes_match, AttendanceRecord, AttendanceStatus, RoutineState};
 use chrono::Timelike;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +36,14 @@ pub enum Command {
     Teacher(String),
     /// View complete weekly routine timetable
     Routine,
+    /// View or switch your class section (e.g. /section B1, /section B2, /section all)
+    Section(String),
+    /// View semester attendance overview and safe bunks (e.g. /attendance, /attendance set CSE-4101 12 2)
+    Attendance(String),
+    /// Quick-log attendance for a course (e.g. /attend CSE-4101)
+    Attend(String),
+    /// Quick-log absence or safe bunk for a course (e.g. /miss CSE-4101)
+    Miss(String),
     /// Show routine status, alert settings, and vacation mode
     Status,
     /// Mark a completed course to stop alerts (e.g. /complete CSE-4125)
@@ -70,6 +78,15 @@ pub enum Command {
     /// Alias for /completed
     #[command(hide)]
     Dropped,
+    /// Alias for /miss (e.g. /bunk CSE-4101)
+    #[command(hide)]
+    Bunk(String),
+    /// Alias for /attend (e.g. /present CSE-4101)
+    #[command(hide)]
+    Present(String),
+    /// Alias for /miss (e.g. /absent CSE-4101)
+    #[command(hide)]
+    Absent(String),
 }
 
 /// Shared runtime context for the Telegram bot.
@@ -86,18 +103,32 @@ pub struct BotContext {
 }
 
 impl BotContext {
-    /// Loads the active, filtered schedule based on current state.
-    pub fn load_active_schedule(&self) -> Result<(Schedule, RoutineState), String> {
+    /// Loads the active, filtered schedule based on current state and chat's section preference.
+    pub fn load_active_schedule_for_chat(&self, chat_id: i64) -> Result<(Schedule, RoutineState), String> {
         let state = RoutineState::load_or_default(&self.state_path).unwrap_or_default();
         let raw = load_routine_file(&self.routine_path)
             .map_err(|e| format!("Failed to read routine: {e}"))?;
 
         let mut sched = raw.filter_active(&state.dropped_courses);
-        if let Some(ref sec) = self.section {
-            sched = sched.filter_section(sec);
+
+        // Check user/chat section preference
+        let user_sec = state
+            .get_user_section(chat_id)
+            .map(String::from)
+            .or_else(|| self.section.clone());
+
+        if let Some(sec) = user_sec {
+            if !sec.eq_ignore_ascii_case("all") {
+                sched = sched.filter_section(&sec);
+            }
         }
 
         Ok((sched, state))
+    }
+
+    /// Loads the active, filtered schedule based on current state using default section.
+    pub fn load_active_schedule(&self) -> Result<(Schedule, RoutineState), String> {
+        self.load_active_schedule_for_chat(0)
     }
 
     /// Resolves the .ics file path, prioritizing output/routine.ics if it exists or by default.
@@ -650,6 +681,105 @@ pub fn render_status_card(
     (text, main_menu_keyboard())
 }
 
+/// Renders the section selection card with active tab chevrons.
+#[must_use]
+pub fn render_section_card(
+    chat_id: i64,
+    state: &RoutineState,
+) -> (String, InlineKeyboardMarkup) {
+    let active = state.get_user_section(chat_id).unwrap_or("B2");
+    let text = format!(
+        "🏷️ <b>Class Section Preference</b>\n\
+         ───────────────────────────\n\
+         Your active section: <b>Section {}</b>\n\n\
+         All schedule queries (/today, /routine, /next) will display classes and labs for your section.\n\n\
+         <i>Tap a button below to switch your section:</i>\n\
+         ───────────────────────────\n\
+         {}",
+        active,
+        live_timestamp()
+    );
+    (text, section_selector_keyboard(Some(active)))
+}
+
+/// Renders the clean, non-cluttered attendance dashboard.
+#[must_use]
+pub fn render_attendance_dashboard(
+    chat_id: i64,
+    sched: &Schedule,
+    state: &RoutineState,
+) -> (String, InlineKeyboardMarkup) {
+    let user_sec = state.get_user_section(chat_id).unwrap_or("B2");
+    let courses = sched.all_course_codes();
+
+    let mut text = format!(
+        "📊 <b>Attendance Summary</b> (Section {})\n\
+         ───────────────────────────\n",
+        user_sec
+    );
+
+    if courses.is_empty() {
+        text.push_str("No active courses found.\n");
+    } else {
+        for code in &courses {
+            let entry = sched.entries.iter().find(|e| codes_match(&e.code, code));
+            let title = entry.map(|e| e.title.as_str()).unwrap_or(code);
+            let lab_badge = entry.map(|e| if e.is_lab() { " 🔬" } else { "" }).unwrap_or("");
+
+            let rec = state.get_attendance(chat_id, code).cloned().unwrap_or_default();
+            let status = rec.status();
+            let pct = rec.percentage();
+
+            text.push_str(&format!(
+                "<b>{}: {}</b>{}\n\
+                 • Status: <b>{}</b> ({:.1}%)\n\
+                 • Record: <b>{}</b> attended / <b>{}</b> missed (Total: {})\n",
+                code,
+                escape_html(title),
+                lab_badge,
+                status,
+                pct,
+                rec.attended,
+                rec.missed,
+                rec.total()
+            ));
+
+            match status {
+                AttendanceStatus::Collegiate => {
+                    let bunks = rec.safe_bunks();
+                    text.push_str(&format!("• Safe Bunks: <b>{}</b>\n\n", bunks));
+                }
+                AttendanceStatus::NonCollegiate => {
+                    let recov = rec.needed_for_collegiate();
+                    text.push_str(&format!(
+                        "• Needed for Collegiate: <b>{}</b> classes\n\n",
+                        recov
+                    ));
+                }
+                AttendanceStatus::DisCollegiate => {
+                    let recov_c = rec.needed_for_collegiate();
+                    let recov_nc = rec.needed_for_non_collegiate();
+                    text.push_str(&format!(
+                        "• Needed for Collegiate: <b>{}</b> classes (Non-Collegiate: {})\n\n",
+                        recov_c, recov_nc
+                    ));
+                }
+            }
+        }
+    }
+
+    text.push_str(&format!(
+        "───────────────────────────\n\
+         <i>💡 Quick log: <code>/attend &lt;CODE&gt;</code> or <code>/miss &lt;CODE&gt;</code>\n\
+         💡 Calibrate: <code>/attendance set &lt;CODE&gt; &lt;ATTENDED&gt; &lt;MISSED&gt;</code></i>\n\
+         ───────────────────────────\n\
+         {}",
+        live_timestamp()
+    ));
+
+    (text, attendance_keyboard())
+}
+
 /// Dispatches an incoming Telegram command using reliable HTML formatting.
 pub async fn handle_command(
     bot: Bot,
@@ -676,13 +806,15 @@ pub async fn handle_command(
     match cmd {
         Command::Help | Command::Start => {
             let help_text = "🎓 <b>Academic Routine Assistant</b>\n\
-                 <i>Autonomous timetable, reminder &amp; calendar assistant</i>\n\
+                 <i>Autonomous timetable, reminder &amp; attendance assistant</i>\n\
                  ───────────────────────────\n\
                  <b>Quick Navigation:</b>\n\
                  Tap any button below or send a command:\n\n\
                  • <code>/today</code> — Today's classes &amp; live status\n\
                  • <code>/next</code> — Upcoming class with countdown\n\
                  • <code>/routine</code> — Full weekly timetable &amp; day switcher\n\
+                 • <code>/attendance</code> — Official attendance &amp; safe bunks\n\
+                 • <code>/section</code> — Switch your section (B1 / B2 / All)\n\
                  • <code>/teacher &lt;name&gt;</code> — Search faculty &amp; 1-tap call/email\n\
                  • <code>/free</code> — Study &amp; break windows\n\
                  • <code>/status</code> — System health &amp; alert status\n\
@@ -696,8 +828,250 @@ pub async fn handle_command(
                 .await?;
         }
 
+        Command::Section(sec) => {
+            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            let clean = sec.trim().to_uppercase();
+            if clean.is_empty() {
+                let (text, markup) = render_section_card(chat_id.0, &state);
+                bot.send_message(chat_id, text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(markup)
+                    .await?;
+            } else {
+                let chosen = match clean.as_str() {
+                    "B1" | "1" => "B1",
+                    "B2" | "2" => "B2",
+                    "ALL" | "*" => "All",
+                    _ => &clean,
+                };
+                state.set_user_section(chat_id.0, chosen);
+                let _ = state.save(&ctx.state_path);
+
+                let (text, markup) = render_section_card(chat_id.0, &state);
+                bot.send_message(
+                    chat_id,
+                    format!("✅ <b>Section preference set to Section {chosen}!</b>\n\n{text}"),
+                )
+                .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
+                .await?;
+            }
+        }
+
+        Command::Attendance(arg) => {
+            let clean = arg.trim();
+            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
+                Ok(res) => res,
+                Err(e) => {
+                    bot.send_message(chat_id, format!("❌ {e}")).await?;
+                    return Ok(());
+                }
+            };
+
+            if clean.is_empty() {
+                let (text, markup) = render_attendance_dashboard(chat_id.0, &sched, &state);
+                bot.send_message(chat_id, text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(markup)
+                    .await?;
+            } else if clean.starts_with("set") {
+                let parts: Vec<&str> = clean.split_whitespace().collect();
+                if parts.len() == 4 {
+                    let code = parts[1].to_uppercase();
+                    let attended = parts[2].parse::<u32>();
+                    let missed = parts[3].parse::<u32>();
+                    match (attended, missed) {
+                        (Ok(att), Ok(mis)) => {
+                            state.set_attendance(chat_id.0, &code, att, mis);
+                            let _ = state.save(&ctx.state_path);
+                            let rec = state
+                                .get_attendance(chat_id.0, &code)
+                                .cloned()
+                                .unwrap_or_default();
+                            let msg = format!(
+                                "✅ <b>Attendance record updated for <code>{}</code>!</b>\n\
+                                 • Record: <b>{}</b> attended / <b>{}</b> missed (Total: {})\n\
+                                 • Status: <b>{}</b> ({:.1}%)\n\n\
+                                 <i>Send /attendance to view your full dashboard.</i>",
+                                escape_html(&code),
+                                rec.attended,
+                                rec.missed,
+                                rec.total(),
+                                rec.status(),
+                                rec.percentage()
+                            );
+                            bot.send_message(chat_id, msg)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                        }
+                        _ => {
+                            bot.send_message(
+                                chat_id,
+                                "⚠️ Invalid numbers. Usage: <code>/attendance set &lt;CODE&gt; &lt;ATTENDED&gt; &lt;MISSED&gt;</code>\n\
+                                 Example: <code>/attendance set CSE-4101 12 2</code>",
+                            )
+                            .parse_mode(ParseMode::Html)
+                            .await?;
+                        }
+                    }
+                } else {
+                    bot.send_message(
+                        chat_id,
+                        "⚠️ Usage: <code>/attendance set &lt;CODE&gt; &lt;ATTENDED&gt; &lt;MISSED&gt;</code>\n\
+                         Example: <code>/attendance set CSE-4101 12 2</code>",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+            } else if clean.starts_with("reset") {
+                let parts: Vec<&str> = clean.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let code = parts[1].to_uppercase();
+                    state.reset_attendance(chat_id.0, &code);
+                    let _ = state.save(&ctx.state_path);
+                    bot.send_message(
+                        chat_id,
+                        format!(
+                            "🔄 Reset attendance record for <code>{}</code>.",
+                            escape_html(&code)
+                        ),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                } else {
+                    state.reset_all_attendance(chat_id.0);
+                    let _ = state.save(&ctx.state_path);
+                    bot.send_message(chat_id, "🔄 Reset all attendance records for this chat.")
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                }
+            } else {
+                bot.send_message(
+                    chat_id,
+                    "💡 <b>Attendance Commands:</b>\n\
+                     • <code>/attendance</code> — View summary &amp; safe bunks\n\
+                     • <code>/attend &lt;CODE&gt;</code> — Quick-log attendance (+1 attended)\n\
+                     • <code>/miss &lt;CODE&gt;</code> — Quick-log absence (+1 missed)\n\
+                     • <code>/attendance set &lt;CODE&gt; &lt;ATTENDED&gt; &lt;MISSED&gt;</code> — Set exact counts\n\
+                     • <code>/attendance reset [CODE]</code> — Reset record",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+            }
+        }
+
+        Command::Attend(code) | Command::Present(code) => {
+            let clean = code.trim().to_uppercase();
+            if clean.is_empty() {
+                bot.send_message(
+                    chat_id,
+                    "⚠️ Please specify a course code (e.g. <code>/attend CSE-4101</code>)",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+                return Ok(());
+            }
+
+            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            state.record_attendance(chat_id.0, &clean, true);
+            let _ = state.save(&ctx.state_path);
+
+            let rec: AttendanceRecord = state
+                .get_attendance(chat_id.0, &clean)
+                .cloned()
+                .unwrap_or_default();
+            let status = rec.status();
+            let bunks_info = match status {
+                AttendanceStatus::Collegiate => {
+                    format!("• Safe Bunks remaining: <b>{}</b>", rec.safe_bunks())
+                }
+                AttendanceStatus::NonCollegiate => format!(
+                    "• Needed for Collegiate: <b>{}</b> classes",
+                    rec.needed_for_collegiate()
+                ),
+                AttendanceStatus::DisCollegiate => format!(
+                    "• Needed for Collegiate: <b>{}</b> classes",
+                    rec.needed_for_collegiate()
+                ),
+            };
+
+            let resp = format!(
+                "✅ <b>Marked Present for <code>{}</code>!</b>\n\
+                 • Record: <b>{}</b> attended / <b>{}</b> missed (Total: {})\n\
+                 • Status: <b>{}</b> ({:.1}%)\n\
+                 {}\n\n\
+                 <i>Send /attendance to view your complete overview.</i>",
+                escape_html(&clean),
+                rec.attended,
+                rec.missed,
+                rec.total(),
+                status,
+                rec.percentage(),
+                bunks_info
+            );
+            bot.send_message(chat_id, resp)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+
+        Command::Miss(code) | Command::Bunk(code) | Command::Absent(code) => {
+            let clean = code.trim().to_uppercase();
+            if clean.is_empty() {
+                bot.send_message(
+                    chat_id,
+                    "⚠️ Please specify a course code (e.g. <code>/miss CSE-4101</code> or <code>/bunk CSE-4101</code>)",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+                return Ok(());
+            }
+
+            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            state.record_attendance(chat_id.0, &clean, false);
+            let _ = state.save(&ctx.state_path);
+
+            let rec: AttendanceRecord = state
+                .get_attendance(chat_id.0, &clean)
+                .cloned()
+                .unwrap_or_default();
+            let status = rec.status();
+            let bunks_info = match status {
+                AttendanceStatus::Collegiate => {
+                    format!("• Safe Bunks remaining: <b>{}</b>", rec.safe_bunks())
+                }
+                AttendanceStatus::NonCollegiate => format!(
+                    "• Needed for Collegiate: <b>{}</b> classes",
+                    rec.needed_for_collegiate()
+                ),
+                AttendanceStatus::DisCollegiate => format!(
+                    "• Needed for Collegiate: <b>{}</b> classes (Non-Collegiate: {})",
+                    rec.needed_for_collegiate(),
+                    rec.needed_for_non_collegiate()
+                ),
+            };
+
+            let resp = format!(
+                "⚠️ <b>Marked Missed for <code>{}</code>.</b>\n\
+                 • Record: <b>{}</b> attended / <b>{}</b> missed (Total: {})\n\
+                 • Status: <b>{}</b> ({:.1}%)\n\
+                 {}\n\n\
+                 <i>Send /attendance to view your complete overview.</i>",
+                escape_html(&clean),
+                rec.attended,
+                rec.missed,
+                rec.total(),
+                status,
+                rec.percentage(),
+                bunks_info
+            );
+            bot.send_message(chat_id, resp)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+
         Command::Status => {
-            let (sched, state) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -713,7 +1087,7 @@ pub async fn handle_command(
         }
 
         Command::Today => {
-            let (sched, state) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -729,7 +1103,7 @@ pub async fn handle_command(
         }
 
         Command::Next => {
-            let (sched, state) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -745,7 +1119,7 @@ pub async fn handle_command(
         }
 
         Command::Tomorrow => {
-            let (sched, _) = match ctx.load_active_schedule() {
+            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -761,7 +1135,7 @@ pub async fn handle_command(
         }
 
         Command::Free => {
-            let (sched, state) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -777,7 +1151,7 @@ pub async fn handle_command(
         }
 
         Command::Teachers => {
-            let (sched, _) = match ctx.load_active_schedule() {
+            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -793,7 +1167,7 @@ pub async fn handle_command(
         }
 
         Command::Teacher(ref query) => {
-            let (sched, _) = match ctx.load_active_schedule() {
+            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -985,7 +1359,7 @@ pub async fn handle_command(
         }
 
         Command::Routine | Command::Week => {
-            let (sched, _) = match ctx.load_active_schedule() {
+            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -1136,7 +1510,7 @@ pub async fn handle_command(
         }
 
         Command::Calendar => {
-            let (sched, state) = match ctx.load_active_schedule() {
+            let (sched, state) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
                     bot.send_message(chat_id, format!("❌ {e}")).await?;
@@ -1261,7 +1635,21 @@ pub async fn handle_callback_query(
         None => return Ok(()),
     };
 
-    let (sched, state) = match ctx.load_active_schedule() {
+    let chat_id = q.message.as_ref().map(|m| m.chat().id.0).unwrap_or(0);
+
+    // If section switch clicked, update user section preference
+    if data == "sec_b1" || data == "sec_b2" || data == "sec_all" {
+        let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+        let chosen = match data {
+            "sec_b1" => "B1",
+            "sec_b2" => "B2",
+            _ => "All",
+        };
+        state.set_user_section(chat_id, chosen);
+        let _ = state.save(&ctx.state_path);
+    }
+
+    let (sched, state) = match ctx.load_active_schedule_for_chat(chat_id) {
         Ok(res) => res,
         Err(e) => {
             let _ = bot
@@ -1276,7 +1664,7 @@ pub async fn handle_callback_query(
     // Calendar download sends the file directly to the chat
     if data == "nav_calendar" {
         if let Some(msg) = &q.message {
-            let chat_id = msg.chat().id;
+            let chat_id_t = msg.chat().id;
             let ics_path = ctx.resolve_ics_path();
             if let Some(parent) = ics_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -1296,7 +1684,7 @@ pub async fn handle_callback_query(
                 .await;
 
             let _ = bot
-                .send_document(chat_id, InputFile::file(&ics_path))
+                .send_document(chat_id_t, InputFile::file(&ics_path))
                 .caption("📅 <b>Your University Class Schedule (.ics)</b>\n\nTap to import all classes and 30-minute alarms into Apple Calendar or Google Calendar.")
                 .parse_mode(ParseMode::Html)
                 .await;
@@ -1311,6 +1699,8 @@ pub async fn handle_callback_query(
         "nav_routine" | "day_all" => render_routine_overview(&sched),
         "nav_teachers" => render_teachers_directory(&sched),
         "nav_free" => render_free_card(&sched, &state),
+        "nav_section" | "sec_b1" | "sec_b2" | "sec_all" => render_section_card(chat_id, &state),
+        "nav_attendance" => render_attendance_dashboard(chat_id, &sched, &state),
         "day_sun" => render_routine_day(&sched, DayOfWeek::Sun),
         "day_mon" => render_routine_day(&sched, DayOfWeek::Mon),
         "day_tue" => render_routine_day(&sched, DayOfWeek::Tue),
@@ -1380,6 +1770,26 @@ mod tests {
         assert_eq!(Command::parse("/dropped", "").unwrap(), Command::Dropped);
         assert_eq!(Command::parse("/calendar", "").unwrap(), Command::Calendar);
         assert_eq!(Command::parse("/sync", "").unwrap(), Command::Sync);
+        assert_eq!(
+            Command::parse("/section B1", "").unwrap(),
+            Command::Section("B1".to_string())
+        );
+        assert_eq!(
+            Command::parse("/attendance", "").unwrap(),
+            Command::Attendance("".to_string())
+        );
+        assert_eq!(
+            Command::parse("/attend CSE-4101", "").unwrap(),
+            Command::Attend("CSE-4101".to_string())
+        );
+        assert_eq!(
+            Command::parse("/miss CSE-4101", "").unwrap(),
+            Command::Miss("CSE-4101".to_string())
+        );
+        assert_eq!(
+            Command::parse("/bunk CSE-4101", "").unwrap(),
+            Command::Bunk("CSE-4101".to_string())
+        );
         assert_eq!(
             Command::parse("/drop CSE-4125", "").unwrap(),
             Command::Drop("CSE-4125".to_string())

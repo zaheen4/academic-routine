@@ -102,6 +102,9 @@ LOGIN_URL = "https://ucam.niter.edu.bd/Security/LogIn.aspx"
 ROUTINE_REPORT_URL = (
     "https://ucam.niter.edu.bd/Module/schedular/Report/RptStudentClassRoutine.aspx?mmi=40545e1e42555f594e63"
 )
+ATTENDANCE_DASHBOARD_URL = (
+    "https://ucam.niter.edu.bd/Module/Dashboard/StudentClassAttendanceDashboard.aspx?mmi=40545a1b42555b5c4e63"
+)
 
 RE_COURSE_CODE = re.compile(r"\b([A-Z]{2,4}-\d{4})\b")
 RE_TIME_SLOT = re.compile(
@@ -281,9 +284,51 @@ def parse_report_html(html: str, default_section: str = "B") -> list[dict]:
     return entries
 
 
+def parse_attendance_html(html: str) -> list[dict]:
+    """Parses official UCAM attendance table into structured records."""
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", id=lambda x: x and "gvCourseList" in x)
+    if not table:
+        return []
+
+    records = []
+    rows = table.find_all("tr")
+    for r in rows:
+        tds = [td.get_text(separator=" ", strip=True) for td in r.find_all(["td", "th"])]
+        if len(tds) < 4:
+            continue
+        row_str = " ".join(tds)
+        code_match = RE_COURSE_CODE.search(row_str)
+        if not code_match:
+            continue
+        course_code = code_match.group(1).upper()
+
+        total_m = re.search(r"Total\s*Class\s*:\s*(\d+)", row_str, re.IGNORECASE)
+        pct_m = re.search(r"Attendance\s*Percentage\s*:\s*([\d.]+)", row_str, re.IGNORECASE)
+        status_m = re.search(r"Attendance\s*Status\s*:\s*([A-Za-z-]+)", row_str, re.IGNORECASE)
+
+        total = int(total_m.group(1)) if total_m else 0
+        pct = float(pct_m.group(1)) if pct_m else 0.0
+        status = status_m.group(1) if status_m else "Collegiate"
+
+        attended = round(total * pct / 100.0)
+        missed = total - attended
+
+        records.append({
+            "course_code": course_code,
+            "total_classes": total,
+            "attended": attended,
+            "missed": missed,
+            "percentage": pct,
+            "status": status,
+        })
+
+    return records
+
+
 async def extract_account_routine(
     account: dict, chrome_bin: str, headed: bool = False
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict], list[dict]]:
     """Logs into UCAM, bypasses Cloudflare, and extracts routine report for an account."""
     uname = account["username"]
     pwd = account["password"]
@@ -384,7 +429,30 @@ async def extract_account_routine(
 
         entries = parse_report_html(report_html, default_section=sec_label)
         logger.info("[%s] Successfully extracted %d class entries.", acc_id, len(entries))
-        return semester_name or "Active Semester", entries
+
+        # Attempt to extract official attendance dashboard
+        attendance_records = []
+        try:
+            logger.info("[%s] Fetching Student Class Attendance Dashboard...", acc_id)
+            await tab.get(ATTENDANCE_DASHBOARD_URL)
+            await asyncio.sleep(6)
+            att_html = await tab.evaluate("""
+                (() => {
+                    const t = document.getElementById("ctl00_MainContainer_gvCourseList");
+                    return t ? t.outerHTML : "";
+                })()
+            """)
+            if att_html:
+                attendance_records = parse_attendance_html(att_html)
+                logger.info(
+                    "[%s] Successfully extracted attendance for %d courses.",
+                    acc_id,
+                    len(attendance_records),
+                )
+        except Exception as e:
+            logger.warning("[%s] Attendance dashboard extraction notice: %s", acc_id, e)
+
+        return semester_name or "Active Semester", entries, attendance_records
 
     finally:
         browser.stop()
@@ -399,6 +467,7 @@ async def run_multi_account_extraction(output_path: Path, headed: bool = False):
     accounts = load_accounts()
 
     all_entries = []
+    all_attendance = []
     processed_accounts = []
     latest_semester = "Level 4 Term 1"
 
@@ -409,10 +478,11 @@ async def run_multi_account_extraction(output_path: Path, headed: bool = False):
         success = False
         for attempt in range(1, 3):
             try:
-                sem, entries = await extract_account_routine(acc, chrome_bin, headed=headed)
+                sem, entries, att = await extract_account_routine(acc, chrome_bin, headed=headed)
                 if sem:
                     latest_semester = sem
                 all_entries.extend(entries)
+                all_attendance.extend(att)
                 processed_accounts.append(acc.get("id", acc["username"]))
                 success = True
                 break
@@ -479,6 +549,26 @@ async def run_multi_account_extraction(output_path: Path, headed: bool = False):
         len(processed_accounts),
         output_path,
     )
+
+    if all_attendance:
+        unique_att = {}
+        for a in all_attendance:
+            unique_att[a["course_code"]] = a
+        att_path = output_path.parent / "attendance_data.json"
+        att_payload = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "records": list(unique_att.values()),
+        }
+        tmp_att = att_path.with_suffix(".tmp")
+        with open(tmp_att, "w", encoding="utf-8") as f:
+            json.dump(att_payload, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp_att, att_path)
+        logger.info(
+            "📊 Wrote %d official attendance records to '%s'.",
+            len(unique_att),
+            att_path,
+        )
 
 
 def main():

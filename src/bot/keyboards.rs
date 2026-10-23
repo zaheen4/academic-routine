@@ -17,6 +17,10 @@ pub fn main_menu_keyboard() -> InlineKeyboardMarkup {
             InlineKeyboardButton::callback("📋 Routine", "nav_routine"),
         ],
         vec![
+            InlineKeyboardButton::callback("📊 Attendance", "nav_attendance"),
+            InlineKeyboardButton::callback("🏷️ Section", "nav_section"),
+        ],
+        vec![
             InlineKeyboardButton::callback("☕ Free Breaks", "nav_free"),
             InlineKeyboardButton::callback("📚 Faculty", "nav_teachers"),
         ],
@@ -125,4 +129,47 @@ pub fn teacher_contact_keyboard(
     } else {
         InlineKeyboardMarkup::new(vec![row1, row2])
     }
+}
+
+/// Builds section-switcher buttons for /section.
+#[must_use]
+pub fn section_selector_keyboard(active: Option<&str>) -> InlineKeyboardMarkup {
+    let act = active.unwrap_or("B2").to_uppercase();
+
+    let b1_label = if act == "B1" {
+        "❯ Section B1 ❮"
+    } else {
+        "Section B1"
+    };
+    let b2_label = if act == "B2" {
+        "❯ Section B2 ❮"
+    } else {
+        "Section B2"
+    };
+    let all_label = if act == "ALL" {
+        "❯ All Sections ❮"
+    } else {
+        "All Sections"
+    };
+
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback(b1_label, "sec_b1"),
+            InlineKeyboardButton::callback(b2_label, "sec_b2"),
+        ],
+        vec![InlineKeyboardButton::callback(all_label, "sec_all")],
+        vec![
+            InlineKeyboardButton::callback("📅 Today", "nav_today"),
+            InlineKeyboardButton::callback("📋 Routine", "nav_routine"),
+        ],
+    ])
+}
+
+/// Builds action buttons for /attendance dashboard.
+#[must_use]
+pub fn attendance_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("📅 Today's Schedule", "nav_today"),
+        InlineKeyboardButton::callback("📋 Routine", "nav_routine"),
+    ]])
 }

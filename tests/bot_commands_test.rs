@@ -83,6 +83,38 @@ fn test_all_bot_commands_syntax_parsing() {
         Command::parse("/restore cse 4125", "").unwrap(),
         Command::Restore("cse 4125".to_string())
     );
+    assert_eq!(
+        Command::parse("/section B1", "").unwrap(),
+        Command::Section("B1".to_string())
+    );
+    assert_eq!(
+        Command::parse("/attendance", "").unwrap(),
+        Command::Attendance("".to_string())
+    );
+    assert_eq!(
+        Command::parse("/attendance set CSE-4101 12 2", "").unwrap(),
+        Command::Attendance("set CSE-4101 12 2".to_string())
+    );
+    assert_eq!(
+        Command::parse("/attend CSE-4101", "").unwrap(),
+        Command::Attend("CSE-4101".to_string())
+    );
+    assert_eq!(
+        Command::parse("/miss CSE-4101", "").unwrap(),
+        Command::Miss("CSE-4101".to_string())
+    );
+    assert_eq!(
+        Command::parse("/bunk CSE-4101", "").unwrap(),
+        Command::Bunk("CSE-4101".to_string())
+    );
+    assert_eq!(
+        Command::parse("/present CSE-4101", "").unwrap(),
+        Command::Present("CSE-4101".to_string())
+    );
+    assert_eq!(
+        Command::parse("/absent CSE-4101", "").unwrap(),
+        Command::Absent("CSE-4101".to_string())
+    );
 
     // 3. Bot handle mentions (e.g. /today@routine_bot)
     assert_eq!(
@@ -257,4 +289,64 @@ fn test_bot_context_lifecycle_and_calendar_sync() {
 
     let (sched_restored, _) = ctx.load_active_schedule().unwrap();
     assert!(sched_restored.all_course_codes().contains("CSE-4125"));
+}
+
+#[test]
+fn test_user_section_schedule_filtering() {
+    let scraper_path = PathBuf::from("output/routine_data.json");
+    if !scraper_path.exists() {
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_path = temp_dir.path().join("routine_state.json");
+
+    let ctx = BotContext {
+        routine_path: scraper_path,
+        state_path: state_path.clone(),
+        section: Some("B2".to_string()),
+        no_http: true,
+    };
+
+    // User 100 sets section B1
+    let mut state = academic_routine::RoutineState::default();
+    state.set_user_section(100, "B1");
+    // User 200 sets section B2
+    state.set_user_section(200, "B2");
+    // User 300 sets section All
+    state.set_user_section(300, "All");
+    state.save(&state_path).unwrap();
+
+    let (sched_b1, _) = ctx.load_active_schedule_for_chat(100).unwrap();
+    let (sched_b2, _) = ctx.load_active_schedule_for_chat(200).unwrap();
+    let (sched_all, _) = ctx.load_active_schedule_for_chat(300).unwrap();
+
+    // Verify section filtering works per chat
+    assert!(sched_b1.entries.iter().all(|e| e.section == "B" || e.section == "B1"));
+    assert!(sched_b2.entries.iter().all(|e| e.section == "B" || e.section == "B2"));
+    assert!(sched_all.entries.len() >= sched_b1.entries.len());
+    assert!(sched_all.entries.len() >= sched_b2.entries.len());
+}
+
+#[test]
+fn test_user_attendance_state_persistence() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_path = temp_dir.path().join("routine_state.json");
+
+    let mut state = academic_routine::RoutineState::default();
+    state.record_attendance(12345, "CSE-4101", true);
+    state.record_attendance(12345, "CSE-4101", true);
+    state.record_attendance(12345, "CSE-4101", false);
+    state.set_attendance(12345, "CSE-4102", 10, 2);
+    state.save(&state_path).unwrap();
+
+    let loaded = academic_routine::RoutineState::load_or_default(&state_path).unwrap();
+    let rec1 = loaded.get_attendance(12345, "CSE-4101").unwrap();
+    assert_eq!(rec1.attended, 2);
+    assert_eq!(rec1.missed, 1);
+
+    let rec2 = loaded.get_attendance(12345, "CSE-4102").unwrap();
+    assert_eq!(rec2.attended, 10);
+    assert_eq!(rec2.missed, 2);
+    assert_eq!(rec2.status(), academic_routine::AttendanceStatus::Collegiate);
 }
