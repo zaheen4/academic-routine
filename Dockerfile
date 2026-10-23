@@ -28,17 +28,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \
     xauth \
     python3 \
-    python3-pip \
-    python3-venv \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Set up isolated Python virtual environment for scraper dependencies
+# Copy uv binary from official image for fast, deterministic dependency management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+# Install scraper dependencies using uv
+COPY pyproject.toml uv.lock ./
 COPY scraper /app/scraper
-RUN python3 -m venv /app/.venv \
-    && /app/.venv/bin/pip install --no-cache-dir -r /app/scraper/requirements.txt
+RUN uv sync --frozen --no-dev
 
 COPY --from=builder /usr/src/app/target/release/academic-routine /usr/local/bin/academic-routine
 

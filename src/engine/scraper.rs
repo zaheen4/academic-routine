@@ -48,7 +48,6 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
     // 1. Resolve Python executable
     let python_candidates = [
         PathBuf::from(".venv/bin/python"),
-        PathBuf::from("venv/bin/python"),
         PathBuf::from("python3"),
         PathBuf::from("python"),
     ];
@@ -137,7 +136,6 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
 pub fn run_gsheet_sync(data_path: &Path) -> Result<(), ScraperError> {
     let python_candidates = [
         PathBuf::from(".venv/bin/python"),
-        PathBuf::from("venv/bin/python"),
         PathBuf::from("python3"),
         PathBuf::from("python"),
     ];
