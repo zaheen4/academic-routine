@@ -1,0 +1,34 @@
+# Git & OS metadata
+.git/
+.gitignore
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Build artifacts & Python virtualenvs
+target/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Sensitive credentials & environment files (Never bake into Docker images!)
+.env
+*.token
+*credentials*.json
+*key*.json
+google_cloud_keys/
+configs/
+
+# Runtime data, temporary output & caches
+output/*
+!output/.gitkeep
+output_of_fetched_routine/
+tmp/
+*.ics
+routine_data.json
+routine_data.json.tmp
+routine_state.json
