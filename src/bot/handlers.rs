@@ -11,7 +11,7 @@ use chrono::Timelike;
 use std::path::PathBuf;
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQuery, InlineKeyboardMarkup, InputFile, ParseMode};
+use teloxide::types::{CallbackQuery, InlineKeyboardMarkup, ParseMode};
 use teloxide::utils::command::BotCommands;
 
 /// 🎓 University Routine Assistant Commands:
@@ -56,9 +56,11 @@ pub enum Command {
     Resume(String),
     /// Configure 6:00 AM daily briefing notifications (on/off/status)
     Alerts(String),
+    /// Configure 30-minute pre-class reminders (on/off/status)
+    Reminders(String),
     /// Manage vacation / semester break mode (on/off/until)
     Vacation(String),
-    /// Send .ics calendar file directly to chat for 1-tap phone import
+    /// Live auto-updating calendar subscription feed (Apple Calendar & Google Calendar)
     Calendar,
     /// Refresh routine directly from UCAM portal and update calendar
     Sync,
@@ -822,6 +824,38 @@ pub fn render_attendance_dashboard(
     (text, attendance_keyboard())
 }
 
+/// Renders the live calendar subscription card with 1-tap subscription links and feed URL.
+#[must_use]
+pub fn render_calendar_subscription_card(
+    gist_id: Option<&str>,
+) -> (String, InlineKeyboardMarkup) {
+    let markup = calendar_subscription_keyboard(gist_id);
+    let resolved_id = gist_id.unwrap_or("");
+    let url_feed = if !resolved_id.is_empty() {
+        format!("https://gist.githubusercontent.com/raw/{resolved_id}/routine.ics")
+    } else {
+        "https://gist.githubusercontent.com/... (Gist not linked)".to_string()
+    };
+
+    let text = format!(
+        "📅 <b>Live University Calendar Subscription</b>\n\
+         ───────────────────────────\n\
+         Subscribe once to sync all classes, rooms, and schedules directly into your phone.\n\n\
+         🔄 <b>Always Up to Date:</b> Room changes and rescheduled sessions auto-refresh without re-downloading!\n\n\
+         <b>1-Tap Subscription:</b>\n\
+         • <b>iPhone / Mac:</b> Tap <i>🍏 Apple Calendar</i> below to subscribe directly in 1 tap.\n\
+         • <b>Android:</b> Tap <i>📅 Google Calendar</i> below to add to your Google account.\n\n\
+         <b>Manual Feed URL (Outlook / WebCal):</b>\n\
+         <code>{}</code>\n\
+         ───────────────────────────\n\
+         {}",
+        url_feed,
+        live_timestamp()
+    );
+
+    (text, markup)
+}
+
 /// Dispatches an incoming Telegram command using reliable HTML formatting.
 pub async fn handle_command(
     bot: Bot,
@@ -859,11 +893,13 @@ pub async fn handle_command(
                  • <code>/attendance</code> — Official attendance &amp; safe bunks\n\
                  • <code>/section</code> — Switch your section (B1 / B2 / All)\n\
                  • <code>/teacher &lt;name&gt;</code> — Search faculty &amp; 1-tap call/email\n\
+                 • <code>/calendar</code> — 1-tap Apple &amp; Google Calendar subscription\n\
+                 • <code>/alerts [on/off]</code> — 6:00 AM daily morning briefings\n\
+                 • <code>/reminders [on/off]</code> — 30-min pre-class notifications\n\
                  • <code>/free</code> — Study &amp; break windows\n\
                  • <code>/status</code> — System health &amp; alert status\n\
-                 • <code>/calendar</code> — 1-tap mobile calendar import\n\
                  ───────────────────────────\n\
-                 <i>💡 30-minute pre-class reminders are active in the background.</i>";
+                 <i>💡 Morning briefings (6:00 AM) are active by default. Pre-class 30-min reminders are opt-in (/reminders on).</i>";
 
             bot.send_message(chat_id, help_text)
                 .parse_mode(ParseMode::Html)
@@ -1454,12 +1490,11 @@ pub async fn handle_command(
 
             match clean.as_str() {
                 "off" | "pause" | "mute" | "stop" => {
-                    state.set_morning_alerts(false);
+                    state.set_user_morning_alerts(chat_id.0, false);
                     let _ = state.save(&ctx.state_path);
-                    let _ = ctx.regenerate_and_sync().await;
                     bot.send_message(
                         chat_id,
-                        "🔕 <b>Proactive Morning Briefings Paused!</b>\n\
+                        "🔕 <b>6:00 AM Morning Briefings Muted!</b>\n\
                          You will not receive 6:00 AM daily alerts.\n\n\
                          <i>Send <code>/alerts on</code> to resume at any time.</i>",
                     )
@@ -1467,22 +1502,22 @@ pub async fn handle_command(
                     .await?;
                 }
                 "on" | "resume" | "unmute" | "start" => {
-                    state.set_morning_alerts(true);
+                    state.set_user_morning_alerts(chat_id.0, true);
                     let _ = state.save(&ctx.state_path);
-                    let _ = ctx.regenerate_and_sync().await;
                     bot.send_message(
                         chat_id,
-                        "🔔 <b>Proactive Morning Briefings Resumed!</b>\n\
-                         You will receive daily briefings at 06:00 AM on class days.",
+                        "🔔 <b>6:00 AM Morning Briefings Active!</b>\n\
+                         You will receive daily briefings at 06:00 AM on class days for your section.",
                     )
                     .parse_mode(ParseMode::Html)
                     .await?;
                 }
                 _ => {
-                    let status = if state.morning_alerts {
+                    let is_active = state.is_morning_alerts_enabled(chat_id.0);
+                    let status = if is_active {
                         "🔔 <b>ACTIVE</b> (06:00 AM on class days)"
                     } else {
-                        "🔕 <b>PAUSED</b> (no alerts)"
+                        "🔕 <b>MUTED</b> (no alerts for your chat)"
                     };
                     bot.send_message(
                         chat_id,
@@ -1491,6 +1526,58 @@ pub async fn handle_command(
                              Status: {}\n\n\
                              • Send <code>/alerts off</code> to pause.\n\
                              • Send <code>/alerts on</code> to resume.",
+                            status
+                        ),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+            }
+        }
+
+        Command::Reminders(action) => {
+            let clean = action.trim().to_lowercase();
+            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+
+            match clean.as_str() {
+                "off" | "pause" | "mute" | "stop" => {
+                    state.set_user_preclass_reminders(chat_id.0, false);
+                    let _ = state.save(&ctx.state_path);
+                    bot.send_message(
+                        chat_id,
+                        "🔕 <b>Pre-Class Reminders Disabled!</b>\n\
+                         You will not receive 30-minute notifications before classes.\n\n\
+                         <i>Send <code>/reminders on</code> to turn on at any time.</i>",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+                "on" | "resume" | "unmute" | "start" => {
+                    state.set_user_preclass_reminders(chat_id.0, true);
+                    let _ = state.save(&ctx.state_path);
+                    bot.send_message(
+                        chat_id,
+                        "🔔 <b>Pre-Class Reminders Activated!</b>\n\
+                         You will receive a notification 30 minutes before every scheduled class for your section.\n\n\
+                         <i>Send <code>/reminders off</code> anytime to disable.</i>",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+                _ => {
+                    let is_active = state.is_preclass_reminders_enabled(chat_id.0);
+                    let status = if is_active {
+                        "🔔 <b>ACTIVE</b> (30 mins before each class)"
+                    } else {
+                        "🔕 <b>DISABLED</b> (opt-in feature)"
+                    };
+                    bot.send_message(
+                        chat_id,
+                        format!(
+                            "⏰ <b>Pre-Class Reminder Settings</b>\n\n\
+                             Status: {}\n\n\
+                             • Send <code>/reminders on</code> to receive 30-minute pre-class alerts.\n\
+                             • Send <code>/reminders off</code> to disable pre-class alerts.",
                             status
                         ),
                     )
@@ -1584,27 +1671,13 @@ pub async fn handle_command(
         }
 
         Command::Calendar => {
-            let (sched, state) = match ctx.load_active_schedule_for_chat(chat_id.0) {
-                Ok(res) => res,
-                Err(e) => {
-                    bot.send_message(chat_id, format!("❌ {e}")).await?;
-                    return Ok(());
-                }
-            };
-
-            let ics_path = ctx.resolve_ics_path();
-            if let Some(parent) = ics_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Err(e) = export_ics_file(&sched, &ics_path, state.semester_end_date) {
-                bot.send_message(chat_id, format!("❌ Failed to generate .ics: {e}"))
-                    .await?;
-                return Ok(());
-            }
-
-            bot.send_document(chat_id, InputFile::file(&ics_path))
-                .caption("📅 <b>Your University Class Schedule (.ics)</b>\n\nTap this file on your phone to import all classes and 30-minute alarms directly into your calendar app with 1 tap!")
+            let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            let env_gid = std::env::var("GIST_ID").ok();
+            let gid = state.gist_id.as_deref().or(env_gid.as_deref());
+            let (text, markup) = render_calendar_subscription_card(gid);
+            bot.send_message(chat_id, text)
                 .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
                 .await?;
         }
 
@@ -1763,37 +1836,6 @@ pub async fn handle_callback_query(
         }
     };
 
-    // Calendar download sends the file directly to the chat
-    if data == "nav_calendar" {
-        if let Some(msg) = &q.message {
-            let chat_id_t = msg.chat().id;
-            let ics_path = ctx.resolve_ics_path();
-            if let Some(parent) = ics_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Err(e) = export_ics_file(&sched, &ics_path, state.semester_end_date) {
-                let _ = bot
-                    .answer_callback_query(q.id.clone())
-                    .text(format!("❌ Failed: {e}"))
-                    .show_alert(true)
-                    .await;
-                return Ok(());
-            }
-
-            let _ = bot
-                .answer_callback_query(q.id.clone())
-                .text("📥 Sending calendar file...")
-                .await;
-
-            let _ = bot
-                .send_document(chat_id_t, InputFile::file(&ics_path))
-                .caption("📅 <b>Your University Class Schedule (.ics)</b>\n\nTap to import all classes and 30-minute alarms into Apple Calendar or Google Calendar.")
-                .parse_mode(ParseMode::Html)
-                .await;
-            return Ok(());
-        }
-    }
-
     let card = match data {
         "nav_today" => render_today_card(&sched, &state),
         "nav_next" => render_next_card(&sched, &state),
@@ -1803,6 +1845,11 @@ pub async fn handle_callback_query(
         "nav_free" => render_free_card(&sched, &state),
         "nav_section" | "sec_b1" | "sec_b2" | "sec_all" => render_section_card(chat_id, &state),
         "nav_attendance" => render_attendance_dashboard(chat_id, &sched, &state),
+        "nav_calendar" => {
+            let env_gid = std::env::var("GIST_ID").ok();
+            let gid = state.gist_id.as_deref().or(env_gid.as_deref());
+            render_calendar_subscription_card(gid)
+        }
         "day_sun" => render_routine_day(&sched, DayOfWeek::Sun),
         "day_mon" => render_routine_day(&sched, DayOfWeek::Mon),
         "day_tue" => render_routine_day(&sched, DayOfWeek::Tue),
@@ -1873,6 +1920,22 @@ mod tests {
         assert_eq!(Command::parse("/calendar", "").unwrap(), Command::Calendar);
         assert_eq!(Command::parse("/sync", "").unwrap(), Command::Sync);
         assert_eq!(Command::parse("/diff", "").unwrap(), Command::Diff);
+        assert_eq!(
+            Command::parse("/alerts on", "").unwrap(),
+            Command::Alerts("on".to_string())
+        );
+        assert_eq!(
+            Command::parse("/alerts off", "").unwrap(),
+            Command::Alerts("off".to_string())
+        );
+        assert_eq!(
+            Command::parse("/reminders on", "").unwrap(),
+            Command::Reminders("on".to_string())
+        );
+        assert_eq!(
+            Command::parse("/reminders off", "").unwrap(),
+            Command::Reminders("off".to_string())
+        );
         assert_eq!(
             Command::parse("/section B1", "").unwrap(),
             Command::Section("B1".to_string())

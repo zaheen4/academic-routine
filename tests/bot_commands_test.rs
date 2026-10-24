@@ -65,6 +65,14 @@ fn test_all_bot_commands_syntax_parsing() {
         Command::Alerts("off".to_string())
     );
     assert_eq!(
+        Command::parse("/reminders on", "").unwrap(),
+        Command::Reminders("on".to_string())
+    );
+    assert_eq!(
+        Command::parse("/reminders off", "").unwrap(),
+        Command::Reminders("off".to_string())
+    );
+    assert_eq!(
         Command::parse("/vacation until 2026-11-15", "").unwrap(),
         Command::Vacation("until 2026-11-15".to_string())
     );
@@ -403,4 +411,30 @@ fn test_schedule_diff_detection_and_formatting() {
     let terminal = diff.render_terminal();
     assert!(terminal.contains("[MODIFIED]"));
     assert!(terminal.contains("[ADDED]"));
+}
+
+#[test]
+fn test_calendar_subscription_card_and_keyboards() {
+    use academic_routine::bot::handlers::render_calendar_subscription_card;
+    use academic_routine::bot::keyboards::calendar_subscription_keyboard;
+
+    let test_gist = "abc123def456";
+    let (text, _markup) = render_calendar_subscription_card(Some(test_gist));
+
+    assert!(text.contains("Live University Calendar Subscription"));
+    assert!(text.contains("https://gist.githubusercontent.com/raw/abc123def456/routine.ics"));
+    assert!(text.contains("Apple Calendar"));
+    assert!(text.contains("Google Calendar"));
+
+    // Check keyboard buttons
+    let kb = calendar_subscription_keyboard(Some(test_gist));
+    let serialized = serde_json::to_string(&kb).unwrap();
+    assert!(serialized.contains("webcal://gist.githubusercontent.com/raw/abc123def456/routine.ics"));
+    assert!(serialized.contains("calendar.google.com"));
+
+    // When gist_id is None, it should not fail or create invalid URL buttons
+    let (no_gist_text, no_gist_kb) = render_calendar_subscription_card(None);
+    assert!(no_gist_text.contains("Gist not linked"));
+    let no_gist_serialized = serde_json::to_string(&no_gist_kb).unwrap();
+    assert!(!no_gist_serialized.contains("webcal://"));
 }

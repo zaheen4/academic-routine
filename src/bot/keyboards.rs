@@ -25,7 +25,7 @@ pub fn main_menu_keyboard() -> InlineKeyboardMarkup {
             InlineKeyboardButton::callback("📚 Faculty", "nav_teachers"),
         ],
         vec![InlineKeyboardButton::callback(
-            "📥 Download .ics Calendar",
+            "📅 Live Calendar Feed",
             "nav_calendar",
         )],
     ])
@@ -41,7 +41,7 @@ pub fn today_keyboard() -> InlineKeyboardMarkup {
         ],
         vec![
             InlineKeyboardButton::callback("📋 Full Routine", "nav_routine"),
-            InlineKeyboardButton::callback("📥 .ics File", "nav_calendar"),
+            InlineKeyboardButton::callback("📅 Live Calendar", "nav_calendar"),
         ],
     ])
 }
@@ -172,4 +172,39 @@ pub fn attendance_keyboard() -> InlineKeyboardMarkup {
         InlineKeyboardButton::callback("📅 Today's Schedule", "nav_today"),
         InlineKeyboardButton::callback("📋 Routine", "nav_routine"),
     ]])
+}
+
+/// Builds 1-tap live calendar subscription buttons (Apple Calendar webcal, Google Calendar web add).
+#[must_use]
+pub fn calendar_subscription_keyboard(gist_id: Option<&str>) -> InlineKeyboardMarkup {
+    let mut rows = Vec::new();
+
+    if let Some(gid) = gist_id {
+        let clean_id = gid.trim();
+        if !clean_id.is_empty() {
+            // Apple Calendar 1-tap webcal URL
+            let webcal_url_str =
+                format!("webcal://gist.githubusercontent.com/raw/{clean_id}/routine.ics");
+            // Google Calendar 1-tap web add URL
+            let gcal_url_str = format!(
+                "https://calendar.google.com/calendar/r?cid=webcal%3A%2F%2Fgist.githubusercontent.com%2Fraw%2F{clean_id}%2Froutine.ics"
+            );
+
+            if let (Ok(apple_url), Ok(gcal_url)) =
+                (Url::parse(&webcal_url_str), Url::parse(&gcal_url_str))
+            {
+                rows.push(vec![
+                    InlineKeyboardButton::url("🍏 Apple Calendar", apple_url),
+                    InlineKeyboardButton::url("📅 Google Calendar", gcal_url),
+                ]);
+            }
+        }
+    }
+
+    rows.push(vec![
+        InlineKeyboardButton::callback("📅 Today", "nav_today"),
+        InlineKeyboardButton::callback("📋 Full Routine", "nav_routine"),
+    ]);
+
+    InlineKeyboardMarkup::new(rows)
 }

@@ -173,6 +173,14 @@ pub struct RoutineState {
     /// Map of Telegram Chat ID -> (Course Code -> AttendanceRecord).
     #[serde(default)]
     pub user_attendance: HashMap<i64, HashMap<String, AttendanceRecord>>,
+
+    /// Chats that have explicitly muted 6:00 AM daily morning briefings.
+    #[serde(default)]
+    pub muted_morning_alerts: HashSet<i64>,
+
+    /// Chats that have explicitly opted into 30-minute pre-class reminders.
+    #[serde(default)]
+    pub user_preclass_reminders: HashSet<i64>,
 }
 
 impl Default for RoutineState {
@@ -190,6 +198,8 @@ impl Default for RoutineState {
             telegram_username: None,
             user_sections: HashMap::new(),
             user_attendance: HashMap::new(),
+            muted_morning_alerts: HashSet::new(),
+            user_preclass_reminders: HashSet::new(),
         }
     }
 }
@@ -388,6 +398,49 @@ impl RoutineState {
         self.user_attendance.remove(&chat_id);
     }
 
+    /// Returns true if morning briefings (06:00 AM) are enabled for a given chat.
+    #[must_use]
+    pub fn is_morning_alerts_enabled(&self, chat_id: i64) -> bool {
+        self.morning_alerts && !self.muted_morning_alerts.contains(&chat_id)
+    }
+
+    /// Sets morning briefing preference for a given chat.
+    pub fn set_user_morning_alerts(&mut self, chat_id: i64, enabled: bool) {
+        if enabled {
+            self.muted_morning_alerts.remove(&chat_id);
+        } else {
+            self.muted_morning_alerts.insert(chat_id);
+        }
+    }
+
+    /// Returns true if 30-minute pre-class reminders are enabled for a given chat (opt-in).
+    #[must_use]
+    pub fn is_preclass_reminders_enabled(&self, chat_id: i64) -> bool {
+        self.morning_alerts && self.user_preclass_reminders.contains(&chat_id)
+    }
+
+    /// Sets 30-minute pre-class reminder preference for a given chat.
+    pub fn set_user_preclass_reminders(&mut self, chat_id: i64, enabled: bool) {
+        if enabled {
+            self.user_preclass_reminders.insert(chat_id);
+        } else {
+            self.user_preclass_reminders.remove(&chat_id);
+        }
+    }
+
+    /// Returns a set of all unique chat IDs that have registered or interacted with the bot.
+    #[must_use]
+    pub fn all_registered_chats(&self) -> HashSet<i64> {
+        let mut set: HashSet<i64> = self.user_sections.keys().copied().collect();
+        for k in self.user_attendance.keys() {
+            set.insert(*k);
+        }
+        for k in &self.user_preclass_reminders {
+            set.insert(*k);
+        }
+        set
+    }
+
     /// Imports attendance records from a UCAM attendance JSON file for a given chat_id.
     pub fn import_ucam_attendance_file(&mut self, chat_id: i64, path: &Path) -> Result<usize, String> {
         if !path.exists() {
@@ -579,6 +632,8 @@ mod tests {
             telegram_username: Some("@testuser".to_string()),
             user_sections: HashMap::new(),
             user_attendance: HashMap::new(),
+            muted_morning_alerts: HashSet::new(),
+            user_preclass_reminders: HashSet::new(),
         };
         original.complete_course("CSE-4102");
 
@@ -665,5 +720,38 @@ mod tests {
         assert_eq!(rec_b.attended, 10);
         assert_eq!(rec_b.missed, 1);
         assert_eq!(rec_b.safe_bunks(), 2);
+    }
+
+    #[test]
+    fn test_multi_user_alerts_and_reminders_preferences() {
+        let mut state = RoutineState::default();
+        let user_a: i64 = 1001;
+        let user_b: i64 = 1002;
+
+        state.set_user_section(user_a, "B1");
+        state.set_user_section(user_b, "B2");
+
+        // 1. Morning alerts enabled by default
+        assert!(state.is_morning_alerts_enabled(user_a));
+        assert!(state.is_morning_alerts_enabled(user_b));
+
+        // 2. Pre-class 30-min reminders disabled by default
+        assert!(!state.is_preclass_reminders_enabled(user_a));
+        assert!(!state.is_preclass_reminders_enabled(user_b));
+
+        // 3. User A opts into 30-min reminders; User B does not
+        state.set_user_preclass_reminders(user_a, true);
+        assert!(state.is_preclass_reminders_enabled(user_a));
+        assert!(!state.is_preclass_reminders_enabled(user_b));
+
+        // 4. User B mutes morning alerts; User A keeps them
+        state.set_user_morning_alerts(user_b, false);
+        assert!(state.is_morning_alerts_enabled(user_a));
+        assert!(!state.is_morning_alerts_enabled(user_b));
+
+        // 5. Check all registered chats
+        let chats = state.all_registered_chats();
+        assert!(chats.contains(&user_a));
+        assert!(chats.contains(&user_b));
     }
 }
