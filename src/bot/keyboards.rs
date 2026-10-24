@@ -182,16 +182,16 @@ pub fn calendar_subscription_keyboard(gist_id: Option<&str>) -> InlineKeyboardMa
     if let Some(gid) = gist_id {
         let clean_id = gid.trim();
         if !clean_id.is_empty() {
-            // Apple Calendar 1-tap webcal URL
-            let webcal_url_str =
-                format!("webcal://gist.githubusercontent.com/raw/{clean_id}/routine.ics");
+            // Apple Calendar direct HTTPS subscription link (RFC 5545)
+            let apple_url_str =
+                format!("https://gist.githubusercontent.com/raw/{clean_id}/routine.ics");
             // Google Calendar 1-tap web add URL
             let gcal_url_str = format!(
                 "https://calendar.google.com/calendar/r?cid=webcal%3A%2F%2Fgist.githubusercontent.com%2Fraw%2F{clean_id}%2Froutine.ics"
             );
 
             if let (Ok(apple_url), Ok(gcal_url)) =
-                (Url::parse(&webcal_url_str), Url::parse(&gcal_url_str))
+                (Url::parse(&apple_url_str), Url::parse(&gcal_url_str))
             {
                 rows.push(vec![
                     InlineKeyboardButton::url("🍏 Apple Calendar", apple_url),

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "academic-routine")]
 #[command(author = "Mir Zaheen Waseet <zwaseet@gmail.com>")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(
     about = "A fast academic schedule engine, .ics calendar synchronizer, and Telegram assistant",
     long_about = None

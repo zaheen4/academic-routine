@@ -517,6 +517,30 @@ async fn main() {
                         let _ = export_ics_file(&active_sched, &ics_path, state.semester_end_date);
                         println!("   • Exported active calendar to: {}", ics_path.display().to_string().cyan());
 
+                        // Auto-import attendance records if attendance_data.json was extracted
+                        let att_path = path.parent().unwrap_or_else(|| std::path::Path::new("")).join("attendance_data.json");
+                        if att_path.exists() {
+                            let admin_chat_id = std::env::var("TELEGRAM_CHAT_ID")
+                                .ok()
+                                .and_then(|s| s.trim().parse::<i64>().ok())
+                                .or_else(|| state.all_registered_chats().into_iter().next())
+                                .unwrap_or(0);
+                            if admin_chat_id > 0 {
+                                match state.import_ucam_attendance_file(admin_chat_id, &att_path) {
+                                    Ok(count) => {
+                                        let _ = state.save(&state_file);
+                                        println!(
+                                            "   • {} Imported official attendance for {} courses into Chat ID {}!",
+                                            "📊".green().bold(),
+                                            count,
+                                            admin_chat_id
+                                        );
+                                    }
+                                    Err(e) => eprintln!("   • ⚠️ Attendance import notice: {e}"),
+                                }
+                            }
+                        }
+
                         if *local_only {
                             println!("🔒 Local-only mode active: skipping cloud Gist and Google Sheets sync.");
                             return;

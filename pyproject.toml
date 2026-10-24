@@ -1,6 +1,6 @@
 [project]
 name = "academic-routine"
-version = "0.1.0"
+version = "0.2.0"
 description = "UCAM routine scraper, Google Sheets synchronizer, and calendar generator"
 requires-python = ">=3.10"
 dependencies = [

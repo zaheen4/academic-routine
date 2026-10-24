@@ -327,7 +327,7 @@ def parse_attendance_html(html: str) -> list[dict]:
 
 
 async def extract_account_routine(
-    account: dict, chrome_bin: str, headed: bool = False
+    account: dict, chrome_bin: str, headed: bool = False, fetch_attendance: bool = True
 ) -> tuple[str, list[dict], list[dict]]:
     """Logs into UCAM, bypasses Cloudflare, and extracts routine report for an account."""
     uname = account["username"]
@@ -430,27 +430,30 @@ async def extract_account_routine(
         entries = parse_report_html(report_html, default_section=sec_label)
         logger.info("[%s] Successfully extracted %d class entries.", acc_id, len(entries))
 
-        # Attempt to extract official attendance dashboard
+        # Attempt to extract official attendance dashboard (primary account only)
         attendance_records = []
-        try:
-            logger.info("[%s] Fetching Student Class Attendance Dashboard...", acc_id)
-            await tab.get(ATTENDANCE_DASHBOARD_URL)
-            await asyncio.sleep(6)
-            att_html = await tab.evaluate("""
-                (() => {
-                    const t = document.getElementById("ctl00_MainContainer_gvCourseList");
-                    return t ? t.outerHTML : "";
-                })()
-            """)
-            if att_html:
-                attendance_records = parse_attendance_html(att_html)
-                logger.info(
-                    "[%s] Successfully extracted attendance for %d courses.",
-                    acc_id,
-                    len(attendance_records),
-                )
-        except Exception as e:
-            logger.warning("[%s] Attendance dashboard extraction notice: %s", acc_id, e)
+        if fetch_attendance:
+            try:
+                logger.info("[%s] Fetching Student Class Attendance Dashboard...", acc_id)
+                await tab.get(ATTENDANCE_DASHBOARD_URL)
+                await asyncio.sleep(6)
+                att_html = await tab.evaluate("""
+                    (() => {
+                        const t = document.getElementById("ctl00_MainContainer_gvCourseList");
+                        return t ? t.outerHTML : "";
+                    })()
+                """)
+                if att_html:
+                    attendance_records = parse_attendance_html(att_html)
+                    logger.info(
+                        "[%s] Successfully extracted attendance for %d courses.",
+                        acc_id,
+                        len(attendance_records),
+                    )
+            except Exception as e:
+                logger.warning("[%s] Attendance dashboard extraction notice: %s", acc_id, e)
+        else:
+            logger.info("[%s] Skipping attendance dashboard (secondary/donor account).", acc_id)
 
         return semester_name or "Active Semester", entries, attendance_records
 
@@ -475,14 +478,19 @@ async def run_multi_account_extraction(output_path: Path, headed: bool = False):
         if idx > 0:
             await asyncio.sleep(4)  # Settle pause between consecutive browser instances
 
+        # Only the primary account (idx == 0) fetches attendance; secondary accounts are schedule donors
+        is_primary = acc.get("primary", idx == 0)
         success = False
         for attempt in range(1, 3):
             try:
-                sem, entries, att = await extract_account_routine(acc, chrome_bin, headed=headed)
+                sem, entries, att = await extract_account_routine(
+                    acc, chrome_bin, headed=headed, fetch_attendance=is_primary
+                )
                 if sem:
                     latest_semester = sem
                 all_entries.extend(entries)
-                all_attendance.extend(att)
+                if is_primary and att:
+                    all_attendance.extend(att)
                 processed_accounts.append(acc.get("id", acc["username"]))
                 success = True
                 break
@@ -557,6 +565,7 @@ async def run_multi_account_extraction(output_path: Path, headed: bool = False):
         att_path = output_path.parent / "attendance_data.json"
         att_payload = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "primary_account": accounts[0].get("username", "Unknown"),
             "records": list(unique_att.values()),
         }
         tmp_att = att_path.with_suffix(".tmp")
@@ -565,8 +574,9 @@ async def run_multi_account_extraction(output_path: Path, headed: bool = False):
             f.write("\n")
         os.replace(tmp_att, att_path)
         logger.info(
-            "📊 Wrote %d official attendance records to '%s'.",
+            "📊 Wrote %d official attendance records for primary account (%s) to '%s'.",
             len(unique_att),
+            accounts[0].get("username"),
             att_path,
         )
 

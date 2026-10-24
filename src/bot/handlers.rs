@@ -1742,7 +1742,17 @@ pub async fn handle_command(
             .await;
 
             match scrape_res {
-                Ok(Ok(_path)) => {
+                Ok(Ok(path)) => {
+                    let att_path = path.parent().unwrap_or_else(|| std::path::Path::new("")).join("attendance_data.json");
+                    let mut att_msg = String::new();
+                    if att_path.exists() {
+                        let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+                        if let Ok(count) = state.import_ucam_attendance_file(chat_id.0, &att_path) {
+                            let _ = state.save(&ctx.state_path);
+                            att_msg = format!("\n📊 <i>Imported official attendance for {} courses.</i>", count);
+                        }
+                    }
+
                     let sync_msg = match ctx.regenerate_and_sync().await {
                         Ok(url) => format!(
                             "\n🔄 <i>Calendar feed updated:</i>\n<code>{}</code>",
@@ -1753,9 +1763,9 @@ pub async fn handle_command(
 
                     let resp = format!(
                         "✅ <b>UCAM Routine Successfully Synchronized!</b>\n\
-                         All class times, room numbers, and instructor contacts are up to date.{}\n\n\
+                         All class times, room numbers, and instructor contacts are up to date.{}{}\n\n\
                          <i>Send /today or /calendar to view your updated routine.</i>",
-                        sync_msg
+                        att_msg, sync_msg
                     );
                     bot.send_message(chat_id, resp)
                         .parse_mode(ParseMode::Html)

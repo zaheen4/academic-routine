@@ -429,7 +429,7 @@ fn test_calendar_subscription_card_and_keyboards() {
     // Check keyboard buttons
     let kb = calendar_subscription_keyboard(Some(test_gist));
     let serialized = serde_json::to_string(&kb).unwrap();
-    assert!(serialized.contains("webcal://gist.githubusercontent.com/raw/abc123def456/routine.ics"));
+    assert!(serialized.contains("https://gist.githubusercontent.com/raw/abc123def456/routine.ics"));
     assert!(serialized.contains("calendar.google.com"));
 
     // When gist_id is None, it should not fail or create invalid URL buttons
