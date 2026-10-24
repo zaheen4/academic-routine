@@ -54,6 +54,15 @@ pub enum Commands {
     /// Scan schedule for time overlaps and room double-bookings
     Conflicts,
 
+    /// Compare previous baseline routine and current routine to display timetable modifications
+    Diff {
+        /// Optional path to previous baseline routine file (defaults to output/routine_data.prev.json)
+        prev: Option<PathBuf>,
+
+        /// Optional path to current routine file (defaults to output/routine_data.json)
+        current: Option<PathBuf>,
+    },
+
     /// Mark a course whose syllabus is completed as finished (hides from alerts and calendar)
     Complete {
         /// Course code to complete (e.g. 'CSE-4125')

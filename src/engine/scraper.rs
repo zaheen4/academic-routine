@@ -73,7 +73,20 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
         .find(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("scraper/extract_ucam.py"));
 
-    // 3. Build command with xvfb-run on Linux if present and not headed
+    // 3. Preserve existing routine as baseline for timetable diffing
+    if output_path.exists() {
+        let prev_path = {
+            let parent = output_path.parent().unwrap_or_else(|| Path::new(""));
+            let stem = output_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("routine_data");
+            parent.join(format!("{stem}.prev.json"))
+        };
+        let _ = std::fs::copy(output_path, &prev_path);
+    }
+
+    // 4. Build command with xvfb-run on Linux if present and not headed
     let has_xvfb = cfg!(target_os = "linux") && is_executable_available("xvfb-run");
 
     let mut cmd = if !headed && has_xvfb {

@@ -216,6 +216,12 @@ impl Schedule {
 
         results
     }
+
+    /// Compares this schedule against an updated revision to identify modifications, additions, and removals.
+    #[must_use]
+    pub fn diff(&self, updated: &Schedule) -> crate::model::diff::ScheduleDiff {
+        crate::model::diff::ScheduleDiff::between(self, updated)
+    }
 }
 
 #[cfg(test)]

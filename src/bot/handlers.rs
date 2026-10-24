@@ -36,6 +36,8 @@ pub enum Command {
     Teacher(String),
     /// View complete weekly routine timetable
     Routine,
+    /// View timetable modifications and room changes detected in the latest update
+    Diff,
     /// View or switch your class section (e.g. /section B1, /section B2, /section all)
     Section(String),
     /// View semester attendance overview and safe bunks (e.g. /attendance, /attendance set CSE-4101 12 2)
@@ -196,6 +198,9 @@ impl BotContext {
         let _parsed = crate::engine::parser::parse_routine_json(&json_content)
             .map_err(|e| format!("Invalid routine data from Gist: {e}"))?;
 
+        // Preserve previous routine as baseline before overwriting
+        self.snapshot_routine_baseline();
+
         // Save atomically to routine_path
         let tmp_path = self.routine_path.with_extension("tmp");
         std::fs::write(&tmp_path, &json_content)
@@ -204,6 +209,43 @@ impl BotContext {
             .map_err(|e| format!("Failed to commit routine data: {e}"))?;
 
         self.regenerate_and_sync().await
+    }
+
+    /// Returns the path to the previous baseline routine file.
+    pub fn routine_prev_path(&self) -> PathBuf {
+        let parent = self.routine_path.parent().unwrap_or_else(|| std::path::Path::new(""));
+        let stem = self
+            .routine_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("routine_data");
+        parent.join(format!("{stem}.prev.json"))
+    }
+
+    /// Snapshots the current routine file to the baseline prev file before overwriting.
+    pub fn snapshot_routine_baseline(&self) {
+        if self.routine_path.exists() {
+            let prev_path = self.routine_prev_path();
+            let _ = std::fs::copy(&self.routine_path, &prev_path);
+        }
+    }
+
+    /// Compares the previous baseline routine (if present) against the currently active routine.
+    pub fn detect_routine_diff(&self) -> Option<crate::model::diff::ScheduleDiff> {
+        let prev_path = self.routine_prev_path();
+        if !prev_path.exists() || !self.routine_path.exists() {
+            return None;
+        }
+
+        let old_sched = load_routine_file(&prev_path).ok()?;
+        let new_sched = load_routine_file(&self.routine_path).ok()?;
+
+        let diff = crate::model::diff::ScheduleDiff::between(&old_sched, &new_sched);
+        if diff.is_empty() {
+            None
+        } else {
+            Some(diff)
+        }
     }
 }
 
@@ -813,6 +855,7 @@ pub async fn handle_command(
                  • <code>/today</code> — Today's classes &amp; live status\n\
                  • <code>/next</code> — Upcoming class with countdown\n\
                  • <code>/routine</code> — Full weekly timetable &amp; day switcher\n\
+                 • <code>/diff</code> — Timetable changes &amp; room shifts\n\
                  • <code>/attendance</code> — Official attendance &amp; safe bunks\n\
                  • <code>/section</code> — Switch your section (B1 / B2 / All)\n\
                  • <code>/teacher &lt;name&gt;</code> — Search faculty &amp; 1-tap call/email\n\
@@ -826,6 +869,37 @@ pub async fn handle_command(
                 .parse_mode(ParseMode::Html)
                 .reply_markup(main_menu_keyboard())
                 .await?;
+        }
+
+        Command::Diff => {
+            let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            let user_sec = state.get_user_section(chat_id.0);
+            if let Some(diff) = ctx.detect_routine_diff() {
+                let sec_diff = if let Some(sec) = user_sec {
+                    diff.filter_section(sec)
+                } else {
+                    diff
+                };
+                if sec_diff.is_empty() {
+                    bot.send_message(
+                        chat_id,
+                        "ℹ️ <b>No Timetable Changes:</b> Routine has no modifications for your section.",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                } else {
+                    bot.send_message(chat_id, sec_diff.render_telegram_card())
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                }
+            } else {
+                bot.send_message(
+                    chat_id,
+                    "ℹ️ <b>No Baseline Snapshot Found:</b> Run <code>/sync</code> first to establish a routine baseline.",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+            }
         }
 
         Command::Section(sec) => {
@@ -1559,6 +1633,20 @@ pub async fn handle_command(
                         bot.send_message(chat_id, resp)
                             .parse_mode(ParseMode::Html)
                             .await?;
+
+                        if let Some(diff) = ctx.detect_routine_diff() {
+                            let sec_diff = if let Some(sec) = state.get_user_section(chat_id.0) {
+                                diff.filter_section(sec)
+                            } else {
+                                diff
+                            };
+                            if !sec_diff.is_empty() {
+                                let _ = bot
+                                    .send_message(chat_id, sec_diff.render_telegram_card())
+                                    .parse_mode(ParseMode::Html)
+                                    .await;
+                            }
+                        }
                         return Ok(());
                     }
                     Err(e) => {
@@ -1599,6 +1687,20 @@ pub async fn handle_command(
                     bot.send_message(chat_id, resp)
                         .parse_mode(ParseMode::Html)
                         .await?;
+
+                    if let Some(diff) = ctx.detect_routine_diff() {
+                        let sec_diff = if let Some(sec) = state.get_user_section(chat_id.0) {
+                            diff.filter_section(sec)
+                        } else {
+                            diff
+                        };
+                        if !sec_diff.is_empty() {
+                            let _ = bot
+                                .send_message(chat_id, sec_diff.render_telegram_card())
+                                .parse_mode(ParseMode::Html)
+                                .await;
+                        }
+                    }
                 }
                 Ok(Err(e)) => {
                     bot.send_message(
@@ -1770,6 +1872,7 @@ mod tests {
         assert_eq!(Command::parse("/dropped", "").unwrap(), Command::Dropped);
         assert_eq!(Command::parse("/calendar", "").unwrap(), Command::Calendar);
         assert_eq!(Command::parse("/sync", "").unwrap(), Command::Sync);
+        assert_eq!(Command::parse("/diff", "").unwrap(), Command::Diff);
         assert_eq!(
             Command::parse("/section B1", "").unwrap(),
             Command::Section("B1".to_string())

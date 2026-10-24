@@ -76,6 +76,68 @@ async fn main() {
 
     // Handle commands that don't strictly require reading full routine upfront
     match &cli.command {
+        Some(Commands::Diff { prev, current }) => {
+            let prev_path = prev.clone().unwrap_or_else(|| {
+                let p = PathBuf::from("output/routine_data.prev.json");
+                if p.exists() {
+                    p
+                } else {
+                    PathBuf::from("routine_data.prev.json")
+                }
+            });
+            let curr_path = current.clone().unwrap_or_else(|| {
+                resolve_routine_path(cli.file.as_ref())
+                    .unwrap_or_else(|| PathBuf::from("output/routine_data.json"))
+            });
+
+            if !prev_path.exists() {
+                eprintln!(
+                    "{} Previous routine baseline not found at '{}'. Run a sync first to establish a baseline.",
+                    "❌".red(),
+                    prev_path.display()
+                );
+                return;
+            }
+            if !curr_path.exists() {
+                eprintln!(
+                    "{} Current routine file not found at '{}'.",
+                    "❌".red(),
+                    curr_path.display()
+                );
+                return;
+            }
+
+            let old_sched = match load_routine_file(&prev_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to parse '{}': {e}",
+                        "❌".red(),
+                        prev_path.display()
+                    );
+                    return;
+                }
+            };
+            let new_sched = match load_routine_file(&curr_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to parse '{}': {e}",
+                        "❌".red(),
+                        curr_path.display()
+                    );
+                    return;
+                }
+            };
+
+            let mut diff = academic_routine::ScheduleDiff::between(&old_sched, &new_sched);
+            if let Some(ref sec) = cli.section {
+                diff = diff.filter_section(sec);
+            }
+
+            print!("{}", diff.render_terminal());
+            return;
+        }
         Some(Commands::Complete { code }) | Some(Commands::Drop { code }) => {
             if state.complete_course(code) {
                 if let Err(e) = state.save(&state_file) {

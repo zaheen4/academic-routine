@@ -37,6 +37,7 @@ fn test_all_bot_commands_syntax_parsing() {
     assert_eq!(Command::parse("/dropped", "").unwrap(), Command::Dropped);
     assert_eq!(Command::parse("/calendar", "").unwrap(), Command::Calendar);
     assert_eq!(Command::parse("/sync", "").unwrap(), Command::Sync);
+    assert_eq!(Command::parse("/diff", "").unwrap(), Command::Diff);
 
     // 2. Commands with arguments
     assert_eq!(
@@ -349,4 +350,57 @@ fn test_user_attendance_state_persistence() {
     assert_eq!(rec2.attended, 10);
     assert_eq!(rec2.missed, 2);
     assert_eq!(rec2.status(), academic_routine::AttendanceStatus::Collegiate);
+}
+
+#[test]
+fn test_schedule_diff_detection_and_formatting() {
+    use academic_routine::{ChangeType, CourseEntry, DayOfWeek, Schedule, ScheduleDiff, TeacherContact, TimeSlot};
+
+    let e_old = CourseEntry::new(
+        "CSE-4101",
+        "Artificial Intelligence",
+        "B",
+        DayOfWeek::Sun,
+        TimeSlot::parse_ucam("08:30 - 10:00").unwrap(),
+        "612",
+        TeacherContact::new("Dr. X", None, None),
+    );
+    let e_new = CourseEntry::new(
+        "CSE-4101",
+        "Artificial Intelligence",
+        "B",
+        DayOfWeek::Sun,
+        TimeSlot::parse_ucam("09:00 - 10:30").unwrap(),
+        "610",
+        TeacherContact::new("Dr. X", None, None),
+    );
+    let e_added = CourseEntry::new(
+        "CSE-4126",
+        "Distributed Systems Lab",
+        "B2",
+        DayOfWeek::Tue,
+        TimeSlot::parse_ucam("01:30 - 04:30").unwrap(),
+        "Lab 4",
+        TeacherContact::new("SS", None, None),
+    );
+
+    let sched_old = Schedule::new("L4T1", None, vec![e_old]);
+    let sched_new = Schedule::new("L4T1", None, vec![e_new, e_added]);
+
+    let diff = ScheduleDiff::between(&sched_old, &sched_new);
+    assert_eq!(diff.len(), 2);
+    assert!(matches!(diff.items[0].change, ChangeType::Modified { .. }));
+    assert!(matches!(diff.items[1].change, ChangeType::Added(_)));
+
+    let card = diff.render_telegram_card();
+    assert!(card.contains("Timetable Updates Detected"));
+    assert!(card.contains("CSE-4101"));
+    assert!(card.contains("612"));
+    assert!(card.contains("610"));
+    assert!(card.contains("CSE-4126"));
+    assert!(card.contains("Lab 4"));
+
+    let terminal = diff.render_terminal();
+    assert!(terminal.contains("[MODIFIED]"));
+    assert!(terminal.contains("[ADDED]"));
 }
