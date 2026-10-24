@@ -40,52 +40,58 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
 
     let shared_ctx = Arc::new(ctx);
 
-    // Spawn 6:00 AM scheduler if TELEGRAM_CHAT_ID is set
-    if let Ok(chat_id_str) = std::env::var("TELEGRAM_CHAT_ID") {
-        if let Ok(chat_id) = chat_id_str.trim().parse::<i64>() {
-            let sched_bot = bot.clone();
-            let sched_ctx = Arc::clone(&shared_ctx);
-            tokio::spawn(async move {
-                start_morning_scheduler(sched_bot, chat_id, sched_ctx).await;
-            });
+    // Parse optional admin TELEGRAM_CHAT_ID
+    let admin_chat_id = std::env::var("TELEGRAM_CHAT_ID")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(0);
 
-            // Spawn 30-minute before-class proactive reminder daemon
-            let reminder_bot = bot.clone();
-            let reminder_ctx = Arc::clone(&shared_ctx);
-            tokio::spawn(async move {
-                start_class_reminder_daemon(reminder_bot, chat_id, reminder_ctx).await;
-            });
+    // Spawn 6:00 AM morning briefing scheduler daemon for all registered users
+    let sched_bot = bot.clone();
+    let sched_ctx = Arc::clone(&shared_ctx);
+    tokio::spawn(async move {
+        start_morning_scheduler(sched_bot, admin_chat_id, sched_ctx).await;
+    });
 
-            // Inspect Telegram handle on startup to cache into routine_state.json
-            let info_bot = bot.clone();
-            let state_file = shared_ctx.state_path.clone();
-            tokio::spawn(async move {
-                if let Ok(chat) = info_bot.get_chat(teloxide::types::ChatId(chat_id)).await {
-                    let handle = chat
-                        .username()
-                        .map(|u| format!("@{u}"))
-                        .or_else(|| chat.first_name().map(|n| n.to_string()));
-                    if let Some(h) = handle {
-                        let mut state =
-                            crate::model::state::RoutineState::load_or_default(&state_file)
-                                .unwrap_or_default();
-                        if state.telegram_username.as_deref() != Some(&h) {
-                            state.telegram_username = Some(h.clone());
-                            let _ = state.save(&state_file);
-                        }
+    // Spawn 30-minute before-class proactive reminder daemon for opted-in users
+    let reminder_bot = bot.clone();
+    let reminder_ctx = Arc::clone(&shared_ctx);
+    tokio::spawn(async move {
+        start_class_reminder_daemon(reminder_bot, admin_chat_id, reminder_ctx).await;
+    });
+
+    if admin_chat_id > 0 {
+        // Inspect Telegram handle on startup to cache into routine_state.json
+        let info_bot = bot.clone();
+        let state_file = shared_ctx.state_path.clone();
+        tokio::spawn(async move {
+            if let Ok(chat) = info_bot.get_chat(teloxide::types::ChatId(admin_chat_id)).await {
+                let handle = chat
+                    .username()
+                    .map(|u| format!("@{u}"))
+                    .or_else(|| chat.first_name().map(|n| n.to_string()));
+                if let Some(h) = handle {
+                    let mut state =
+                        crate::model::state::RoutineState::load_or_default(&state_file)
+                            .unwrap_or_default();
+                    if state.telegram_username.as_deref() != Some(&h) {
+                        state.telegram_username = Some(h.clone());
+                        let _ = state.save(&state_file);
                     }
                 }
-            });
+            }
+        });
 
-            let state = crate::model::state::RoutineState::load_or_default(&shared_ctx.state_path)
-                .unwrap_or_default();
-            let user_info = state
-                .telegram_username
-                .as_deref()
-                .map(|u| format!("{u} [Chat {chat_id}]"))
-                .unwrap_or_else(|| format!("Chat ID: {chat_id}"));
-            println!("🔔 Proactive 06:00 AM morning briefings active for {user_info}");
-        }
+        let state = crate::model::state::RoutineState::load_or_default(&shared_ctx.state_path)
+            .unwrap_or_default();
+        let user_info = state
+            .telegram_username
+            .as_deref()
+            .map(|u| format!("{u} [Chat {admin_chat_id}]"))
+            .unwrap_or_else(|| format!("Chat ID: {admin_chat_id}"));
+        println!("🔔 Proactive 06:00 AM morning briefings active for admin {user_info} and registered classmates");
+    } else {
+        println!("🔔 Proactive multi-user scheduler active for all registered classmates");
     }
 
     // Spawn lightweight HTTP health check server for cloud platforms (e.g. Render) unless disabled
