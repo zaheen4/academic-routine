@@ -99,15 +99,36 @@ pub async fn sync_gist_bundle(
     if let Some(token) = resolve_github_token() {
         let client = reqwest::Client::new();
         let url = format!("https://api.github.com/gists/{gist_id}");
-        let response = client
+        let mut patch_files = files.clone();
+        let mut response = client
             .patch(&url)
             .header("Authorization", format!("Bearer {}", token.trim()))
             .header("User-Agent", USER_AGENT)
             .header("Accept", "application/vnd.github+json")
-            .json(&serde_json::json!({ "files": files }))
+            .json(&serde_json::json!({ "files": patch_files }))
             .send()
             .await
             .map_err(|e| format!("GitHub API network error: {e}"))?;
+
+        // If the target Gist does not have routine_state.json, GitHub returns 422 Unprocessable Entity
+        // for deleting a non-existent file. Retry without the null deletion key.
+        if !response.status().is_success()
+            && response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY
+            && patch_files.get(LEGACY_STATE_FILENAME).is_some()
+        {
+            if let Some(map) = patch_files.as_object_mut() {
+                map.remove(LEGACY_STATE_FILENAME);
+                response = client
+                    .patch(&url)
+                    .header("Authorization", format!("Bearer {}", token.trim()))
+                    .header("User-Agent", USER_AGENT)
+                    .header("Accept", "application/vnd.github+json")
+                    .json(&serde_json::json!({ "files": map }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("GitHub API network error: {e}"))?;
+            }
+        }
 
         if response.status().is_success() {
             return Ok(feed_url(gist_id, ics_filename));
