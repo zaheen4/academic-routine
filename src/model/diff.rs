@@ -2,7 +2,7 @@
 
 use crate::model::course::CourseEntry;
 use crate::model::day::DayOfWeek;
-use crate::model::schedule::Schedule;
+use crate::model::schedule::{is_all_section, normalize_section, Schedule};
 use crate::model::state::codes_match;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -76,14 +76,22 @@ impl ScheduleDiff {
             let mut old_matches: Vec<&CourseEntry> = old
                 .entries
                 .iter()
-                .filter(|e| codes_match(&e.code, &code) && e.section.eq_ignore_ascii_case(&sec) && e.day == day)
+                .filter(|e| {
+                    codes_match(&e.code, &code)
+                        && e.section.eq_ignore_ascii_case(&sec)
+                        && e.day == day
+                })
                 .collect();
             old_matches.sort_by_key(|e| e.time_slot.start());
 
             let mut new_matches: Vec<&CourseEntry> = new
                 .entries
                 .iter()
-                .filter(|e| codes_match(&e.code, &code) && e.section.eq_ignore_ascii_case(&sec) && e.day == day)
+                .filter(|e| {
+                    codes_match(&e.code, &code)
+                        && e.section.eq_ignore_ascii_case(&sec)
+                        && e.day == day
+                })
                 .collect();
             new_matches.sort_by_key(|e| e.time_slot.start());
 
@@ -164,24 +172,22 @@ impl ScheduleDiff {
     /// Filters the diff to only include changes relevant to a specific student section (e.g. `"B2"`).
     #[must_use]
     pub fn filter_section(&self, target_section: &str) -> Self {
-        let target = target_section.trim().to_uppercase();
-        if target == "ALL" || target.is_empty() {
+        if is_all_section(target_section) {
             return self.clone();
         }
+        let target = normalize_section(target_section);
 
         let filtered_items = self
             .items
             .iter()
             .filter(|item| {
-                let sec = item.section.to_uppercase();
+                let sec = normalize_section(&item.section);
                 if sec == target {
                     return true;
                 }
-                // Theory sections (e.g. "B") apply to sub-sections (e.g. "B2")
-                if target.len() > 1 && sec == target[..target.len() - 1] {
-                    return true;
-                }
-                false
+                // Theory sections (e.g. "B") apply to sub-sections (e.g. "B2"),
+                // and a theory filter (e.g. "B") includes its labs.
+                target.starts_with(&sec) || sec.starts_with(&target)
             })
             .cloned()
             .collect();
@@ -382,7 +388,14 @@ mod tests {
 
     #[test]
     fn test_diff_empty_when_identical() {
-        let e1 = sample_course("CSE-4101", "B", DayOfWeek::Sun, "08:30 - 10:00", "612", "Dr. A");
+        let e1 = sample_course(
+            "CSE-4101",
+            "B",
+            DayOfWeek::Sun,
+            "08:30 - 10:00",
+            "612",
+            "Dr. A",
+        );
         let sched1 = Schedule::new("L4T1", None, vec![e1.clone()]);
         let sched2 = Schedule::new("L4T1", None, vec![e1]);
 
@@ -393,8 +406,22 @@ mod tests {
 
     #[test]
     fn test_diff_detects_room_and_time_changes() {
-        let e_old = sample_course("CSE-4101", "B", DayOfWeek::Sun, "08:30 - 10:00", "612", "Dr. A");
-        let e_new = sample_course("CSE-4101", "B", DayOfWeek::Sun, "09:00 - 10:30", "610", "Dr. A");
+        let e_old = sample_course(
+            "CSE-4101",
+            "B",
+            DayOfWeek::Sun,
+            "08:30 - 10:00",
+            "612",
+            "Dr. A",
+        );
+        let e_new = sample_course(
+            "CSE-4101",
+            "B",
+            DayOfWeek::Sun,
+            "09:00 - 10:30",
+            "610",
+            "Dr. A",
+        );
 
         let sched_old = Schedule::new("L4T1", None, vec![e_old]);
         let sched_new = Schedule::new("L4T1", None, vec![e_new]);
@@ -421,8 +448,22 @@ mod tests {
 
     #[test]
     fn test_diff_detects_additions_and_removals() {
-        let e1 = sample_course("CSE-4101", "B", DayOfWeek::Sun, "08:30 - 10:00", "612", "Dr. A");
-        let e_added = sample_course("CSE-4126", "B2", DayOfWeek::Tue, "01:30 - 04:30", "Lab 4", "SS");
+        let e1 = sample_course(
+            "CSE-4101",
+            "B",
+            DayOfWeek::Sun,
+            "08:30 - 10:00",
+            "612",
+            "Dr. A",
+        );
+        let e_added = sample_course(
+            "CSE-4126",
+            "B2",
+            DayOfWeek::Tue,
+            "01:30 - 04:30",
+            "Lab 4",
+            "SS",
+        );
 
         let sched_old = Schedule::new("L4T1", None, vec![e1.clone()]);
         let sched_new = Schedule::new("L4T1", None, vec![e1, e_added.clone()]);
@@ -441,9 +482,30 @@ mod tests {
 
     #[test]
     fn test_diff_section_filtering() {
-        let e_b1 = sample_course("CSE-4126", "B1", DayOfWeek::Mon, "01:30 - 04:30", "Lab 4", "SS");
-        let e_b2 = sample_course("CSE-4126", "B2", DayOfWeek::Tue, "01:30 - 04:30", "Lab 4", "SS");
-        let e_theory = sample_course("CSE-4101", "B", DayOfWeek::Sun, "08:30 - 10:00", "612", "Dr. A");
+        let e_b1 = sample_course(
+            "CSE-4126",
+            "B1",
+            DayOfWeek::Mon,
+            "01:30 - 04:30",
+            "Lab 4",
+            "SS",
+        );
+        let e_b2 = sample_course(
+            "CSE-4126",
+            "B2",
+            DayOfWeek::Tue,
+            "01:30 - 04:30",
+            "Lab 4",
+            "SS",
+        );
+        let e_theory = sample_course(
+            "CSE-4101",
+            "B",
+            DayOfWeek::Sun,
+            "08:30 - 10:00",
+            "612",
+            "Dr. A",
+        );
 
         let sched_old = Schedule::new("L4T1", None, vec![]);
         let sched_new = Schedule::new("L4T1", None, vec![e_b1, e_b2, e_theory]);
@@ -454,6 +516,9 @@ mod tests {
         // Section B2 should see theory (B) and lab (B2), but NOT lab (B1)
         let b2_diff = full_diff.filter_section("B2");
         assert_eq!(b2_diff.len(), 2);
-        assert!(b2_diff.items.iter().all(|i| i.section == "B" || i.section == "B2"));
+        assert!(b2_diff
+            .items
+            .iter()
+            .all(|i| i.section == "B" || i.section == "B2"));
     }
 }

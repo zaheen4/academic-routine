@@ -3,7 +3,20 @@
 use crate::model::course::CourseEntry;
 use crate::model::day::DayOfWeek;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Normalizes a user-supplied section label (`" b2 "` -> `"B2"`).
+#[must_use]
+pub fn normalize_section(section: &str) -> String {
+    section.trim().to_uppercase()
+}
+
+/// Returns true when a section label means "no filtering" (`ALL`, `*`, or empty).
+#[must_use]
+pub fn is_all_section(section: &str) -> bool {
+    let clean = normalize_section(section);
+    clean.is_empty() || clean == "ALL" || clean == "*"
+}
 
 /// Represents a conflict between two scheduled course sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +57,22 @@ impl Schedule {
         }
     }
 
+    /// Returns true when `target` is a valid selector for this schedule.
+    ///
+    /// Accepts `ALL`, an exact section label, or a theory prefix such as `"B"`
+    /// that matches lab sections like `"B1"`/`"B2"`.
+    #[must_use]
+    pub fn is_valid_section(&self, target: &str) -> bool {
+        if is_all_section(target) {
+            return true;
+        }
+        let target = normalize_section(target);
+        self.entries.iter().any(|entry| {
+            let sec = normalize_section(&entry.section);
+            sec == target || sec.starts_with(&target)
+        })
+    }
+
     /// Returns all class entries occurring on a specific day, sorted chronologically.
     #[must_use]
     pub fn for_day(&self, day: DayOfWeek) -> Vec<&CourseEntry> {
@@ -71,7 +100,10 @@ impl Schedule {
     /// (e.g. section `"B"` theory courses are kept for student section `"B2"`).
     #[must_use]
     pub fn filter_section(&self, target_section: &str) -> Self {
-        let target = target_section.trim().to_uppercase();
+        if is_all_section(target_section) {
+            return self.clone();
+        }
+        let target = normalize_section(target_section);
         let filtered = self
             .entries
             .iter()
@@ -82,6 +114,10 @@ impl Schedule {
                 }
                 // If target is "B2" and course is theory "B", keep it
                 if target.starts_with(&sec) && !e.is_lab() {
+                    return true;
+                }
+                // If target is theory "B", keep its lab sections as well.
+                if sec.starts_with(&target) {
                     return true;
                 }
                 false
@@ -98,7 +134,7 @@ impl Schedule {
 
     /// Produces a filtered [`Schedule`] excluding any course codes marked as dropped.
     #[must_use]
-    pub fn filter_active(&self, dropped_codes: &HashSet<String>) -> Self {
+    pub fn filter_active(&self, dropped_codes: &BTreeSet<String>) -> Self {
         let filtered = self
             .entries
             .iter()
@@ -180,7 +216,11 @@ impl Schedule {
     pub fn find_teachers(
         &self,
         query: &str,
-    ) -> Vec<(String, crate::model::course::TeacherContact, Vec<&CourseEntry>)> {
+    ) -> Vec<(
+        String,
+        crate::model::course::TeacherContact,
+        Vec<&CourseEntry>,
+    )> {
         let q = query.trim().to_lowercase();
         let mut results = Vec::new();
         let directory = self.teacher_directory();
@@ -201,15 +241,11 @@ impl Schedule {
                 .filter(|e| e.teacher.name == name)
                 .collect();
 
-            let course_matches = taught_courses.iter().any(|c| {
-                c.code.to_lowercase().contains(&q) || c.title.to_lowercase().contains(&q)
-            });
+            let course_matches = taught_courses
+                .iter()
+                .any(|c| c.code.to_lowercase().contains(&q) || c.title.to_lowercase().contains(&q));
 
-            if q.is_empty()
-                || name_lower.contains(&q)
-                || initials.contains(&q)
-                || course_matches
-            {
+            if q.is_empty() || name_lower.contains(&q) || initials.contains(&q) || course_matches {
                 results.push((name, contact, taught_courses));
             }
         }

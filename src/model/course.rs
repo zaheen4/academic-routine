@@ -96,13 +96,24 @@ impl CourseEntry {
 
     /// Generates a deterministic, stable RFC 5545 iCalendar `UID`.
     ///
-    /// Formatted as `<clean_code>-<day>-<hhmm>@academic-routine`.
+    /// Formatted as `<clean_code>-<clean_section>-<day>-<hhmmss>@academic-routine`.
+    /// The section is part of the identity because two lab sections can share the
+    /// same course code, day, and start time.
     #[must_use]
     pub fn ical_uid(&self) -> String {
         let clean_code = self.code.to_lowercase().replace([' ', '-', '_', '.'], "");
+        let clean_section = self
+            .section
+            .to_lowercase()
+            .replace([' ', '-', '_', '.'], "");
+        let section = if clean_section.is_empty() {
+            "na".to_string()
+        } else {
+            clean_section
+        };
         let day_str = self.day.as_str().to_lowercase();
         let time_str = self.time_slot.ical_start_time();
-        format!("{clean_code}-{day_str}-{time_str}@academic-routine")
+        format!("{clean_code}-{section}-{day_str}-{time_str}@academic-routine")
     }
 
     /// Formats a concise one-line summary for notifications or CLI listings.
@@ -141,7 +152,7 @@ mod tests {
 
         assert!(!theory.is_lab());
         assert_eq!(theory.code, "CSE-4101");
-        assert_eq!(theory.ical_uid(), "cse4101-mon-091500@academic-routine");
+        assert_eq!(theory.ical_uid(), "cse4101-b-mon-091500@academic-routine");
         assert_eq!(
             theory.teacher.formatted_summary(),
             "Teacher: Utpol Kanti Das | Phone: 01859222633 | Email: ukdas@niter.edu.bd"
@@ -157,5 +168,69 @@ mod tests {
             teacher,
         );
         assert!(lab.is_lab());
+    }
+
+    #[test]
+    fn test_ical_uid_distinguishes_sections() {
+        let slot = TimeSlot::from_str("10:30 - 11:45").unwrap();
+        let teacher = TeacherContact::default();
+        let b1 = CourseEntry::new(
+            "CSE-4111",
+            "AI Lab",
+            "B1",
+            DayOfWeek::Mon,
+            slot,
+            "AC-217",
+            teacher.clone(),
+        );
+        let b2 = CourseEntry::new(
+            "CSE-4111",
+            "AI Lab",
+            "B2",
+            DayOfWeek::Mon,
+            slot,
+            "AC-131",
+            teacher,
+        );
+
+        assert_ne!(b1.ical_uid(), b2.ical_uid());
+        assert_eq!(b1.ical_uid(), b1.ical_uid());
+    }
+
+    #[test]
+    fn test_ical_uid_normalizes_section_and_falls_back() {
+        let slot = TimeSlot::from_str("10:30 - 11:45").unwrap();
+        let teacher = TeacherContact::default();
+        let spaced = CourseEntry::new(
+            "CSE 4111",
+            "AI Lab",
+            " b-1 ",
+            DayOfWeek::Mon,
+            slot,
+            "AC-217",
+            teacher.clone(),
+        );
+        let plain = CourseEntry::new(
+            "cse-4111",
+            "AI Lab",
+            "B1",
+            DayOfWeek::Mon,
+            slot,
+            "AC-217",
+            teacher.clone(),
+        );
+        let empty = CourseEntry::new(
+            "CSE-4111",
+            "AI Lab",
+            "",
+            DayOfWeek::Mon,
+            slot,
+            "AC-217",
+            teacher,
+        );
+
+        assert_eq!(spaced.ical_uid(), plain.ical_uid());
+        assert!(empty.ical_uid().contains("-na-mon-"));
+        assert!(!empty.ical_uid().contains("--"));
     }
 }

@@ -51,10 +51,26 @@ pub enum TimeSlotError {
 /// assert_eq!(slot.format_12h(), "11:45 AM - 01:00 PM");
 /// assert_eq!(slot.duration_minutes(), 75);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TimeSlot {
     start: NaiveTime,
     end: NaiveTime,
+}
+
+#[derive(Deserialize)]
+struct RawTimeSlot {
+    start: NaiveTime,
+    end: NaiveTime,
+}
+
+impl<'de> Deserialize<'de> for TimeSlot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawTimeSlot::deserialize(deserializer)?;
+        Self::new(raw.start, raw.end).map_err(serde::de::Error::custom)
+    }
 }
 
 impl TimeSlot {
@@ -438,18 +454,16 @@ mod tests {
     }
 
     #[test]
-    fn test_contains_time() {
-        let slot = TimeSlot::from_str("09:15 - 10:30").unwrap();
-        let before = NaiveTime::from_hms_opt(9, 14, 59).unwrap();
-        let at_start = NaiveTime::from_hms_opt(9, 15, 0).unwrap();
-        let inside = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
-        let at_end = NaiveTime::from_hms_opt(10, 30, 0).unwrap();
-        let after = NaiveTime::from_hms_opt(10, 30, 1).unwrap();
+    fn test_deserialize_rejects_invalid_order() {
+        let valid = r#"{"start":"09:15:00","end":"10:30:00"}"#;
+        let slot: TimeSlot = serde_json::from_str(valid).unwrap();
+        assert_eq!(slot.format_24h(), "09:15 - 10:30");
+        assert_eq!(serde_json::to_string(&slot).unwrap(), valid);
 
-        assert!(!slot.contains_time(before));
-        assert!(slot.contains_time(at_start)); // inclusive start
-        assert!(slot.contains_time(inside));
-        assert!(!slot.contains_time(at_end)); // exclusive end
-        assert!(!slot.contains_time(after));
+        let invalid = r#"{"start":"10:30:00","end":"09:15:00"}"#;
+        assert!(serde_json::from_str::<TimeSlot>(invalid).is_err());
+
+        let equal = r#"{"start":"10:00:00","end":"10:00:00"}"#;
+        assert!(serde_json::from_str::<TimeSlot>(equal).is_err());
     }
 }

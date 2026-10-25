@@ -108,7 +108,9 @@ pub fn render_teacher_card(
     courses: &[&crate::model::course::CourseEntry],
 ) -> String {
     let mut out = String::new();
-    out.push_str(&format!("┌── Faculty Profile: {name} ───────────────────────────\n"));
+    out.push_str(&format!(
+        "┌── Faculty Profile: {name} ───────────────────────────\n"
+    ));
     if let Some(ref p) = contact.phone {
         out.push_str(&format!("│ Phone   : {p}\n"));
     }

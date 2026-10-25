@@ -1,41 +1,67 @@
-//! RFC 5545 compliant iCalendar (.ics) generation and phone synchronization.
+//! RFC 5545 compliant iCalendar (`.ics`) generation and phone synchronization.
 //!
 //! Produces recurring calendar feeds compatible with Google Calendar, Android system calendars,
 //! Apple Calendar, and desktop clients (Thunderbird).
 //!
 //! Features:
-//! - Deterministic stable `UID`s (prevents duplicate events upon re-import or feed refresh).
-//! - Recurrence rules (`RRULE`) with configurable semester end dates (`UNTIL`).
+//! - Deterministic stable `UID`s including the class section (prevents duplicate/missing labs).
+//! - A real `VTIMEZONE` block plus correct UTC `UNTIL` conversion.
+//! - 75-octet UTF-8-safe line folding for every property.
 //! - Automatic sound & display alarms 30 minutes before every class (`VALARM`).
-//! - Rich clickable event descriptions with instructor phone numbers and emails.
 
 use crate::model::day::DayOfWeek;
 use crate::model::schedule::Schedule;
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, FixedOffset, NaiveDate, TimeZone, Utc};
 use std::fs;
 use std::io;
 use std::path::Path;
 
+const TZID: &str = "Asia/Dhaka";
+const MAX_LINE_OCTETS: usize = 75;
+
 /// Generates an RFC 5545 compliant iCalendar (`.ics`) string for the given schedule.
 ///
 /// If `semester_end_date` is provided, recurring events will automatically cease
-/// on that date via an `UNTIL` rule.
+/// on that date via an `UNTIL` rule (converted to the correct UTC instant).
 #[must_use]
 pub fn generate_ics(schedule: &Schedule, semester_end_date: Option<NaiveDate>) -> String {
-    let now_utc = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let dtstamp = schedule
+        .generated_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now)
+        .format("%Y%m%dT%H%M%SZ")
+        .to_string();
     let today = crate::model::day::academic_now().date_naive();
 
     let mut ics = String::new();
     ics.push_str("BEGIN:VCALENDAR\r\n");
-    ics.push_str("VERSION:2.0\r\n");
-    ics.push_str("PRODID:-//Academic Routine Assistant//EN\r\n");
-    ics.push_str("CALSCALE:GREGORIAN\r\n");
-    ics.push_str("METHOD:PUBLISH\r\n");
-    ics.push_str(&format!(
-        "X-WR-CALNAME:{}\r\n",
-        escape_ics(&schedule.semester_name)
-    ));
-    ics.push_str("X-WR-TIMEZONE:Asia/Dhaka\r\n");
+    push_prop(&mut ics, "VERSION", "2.0");
+    push_prop(&mut ics, "PRODID", "-//Academic Routine Assistant//EN");
+    push_prop(&mut ics, "CALSCALE", "GREGORIAN");
+    push_prop(&mut ics, "METHOD", "PUBLISH");
+    push_prop(&mut ics, "X-WR-CALNAME", &schedule.semester_name);
+    push_prop(&mut ics, "X-WR-TIMEZONE", TZID);
+
+    // Bangladesh observes UTC+6 year-round, so one STANDARD observance is correct.
+    let offset = local_offset();
+    let offset_from = format!(
+        "{}{:02}{:02}",
+        if offset < 0 { "-" } else { "+" },
+        offset.abs() / 3600,
+        (offset.abs() % 3600) / 60
+    );
+    ics.push_str("BEGIN:VTIMEZONE\r\n");
+    push_prop(&mut ics, "TZID", TZID);
+    push_prop(&mut ics, "X-LIC-LOCATION", TZID);
+    ics.push_str("BEGIN:STANDARD\r\n");
+    push_prop(&mut ics, "DTSTART", "19700101T000000");
+    push_prop(&mut ics, "TZOFFSETFROM", &offset_from);
+    push_prop(&mut ics, "TZOFFSETTO", &offset_from);
+    push_prop(&mut ics, "TZNAME", &format_offset_name(offset));
+    ics.push_str("END:STANDARD\r\n");
+    ics.push_str("END:VTIMEZONE\r\n");
 
     for entry in &schedule.entries {
         let first_date = next_matching_weekday(entry.day, today);
@@ -59,39 +85,36 @@ pub fn generate_ics(schedule: &Schedule, semester_end_date: Option<NaiveDate>) -
         let location = format!("Room {}", entry.room);
         let description = entry.teacher.formatted_summary();
 
-        // Recurrence rule
         let rrule = if let Some(until) = semester_end_date {
             format!(
-                "RRULE:FREQ=WEEKLY;BYDAY={};UNTIL={:04}{:02}{:02}T235959Z\r\n",
+                "FREQ=WEEKLY;BYDAY={};UNTIL={}",
                 entry.day.ical_code(),
-                until.year(),
-                until.month(),
-                until.day()
+                until_utc_compact(until, offset)
             )
         } else {
-            format!("RRULE:FREQ=WEEKLY;BYDAY={}\r\n", entry.day.ical_code())
+            format!("FREQ=WEEKLY;BYDAY={}", entry.day.ical_code())
         };
 
         ics.push_str("BEGIN:VEVENT\r\n");
-        ics.push_str(&format!("UID:{uid}\r\n"));
-        ics.push_str(&format!("DTSTAMP:{now_utc}\r\n"));
-        ics.push_str(&format!("DTSTART;TZID=Asia/Dhaka:{dtstart}\r\n"));
-        ics.push_str(&format!("DTEND;TZID=Asia/Dhaka:{dtend}\r\n"));
-        ics.push_str(&rrule);
-        ics.push_str(&format!("SUMMARY:{}\r\n", escape_ics(&summary)));
-        ics.push_str(&format!("LOCATION:{}\r\n", escape_ics(&location)));
-        ics.push_str(&format!("DESCRIPTION:{}\r\n", escape_ics(&description)));
-        ics.push_str("STATUS:CONFIRMED\r\n");
+        push_prop(&mut ics, "UID", &uid);
+        push_prop(&mut ics, "DTSTAMP", &dtstamp);
+        push_prop(&mut ics, &format!("DTSTART;TZID={TZID}"), &dtstart);
+        push_prop(&mut ics, &format!("DTEND;TZID={TZID}"), &dtend);
+        push_prop(&mut ics, "RRULE", &rrule);
+        push_text_prop(&mut ics, "SUMMARY", &summary);
+        push_text_prop(&mut ics, "LOCATION", &location);
+        push_text_prop(&mut ics, "DESCRIPTION", &description);
+        push_prop(&mut ics, "STATUS", "CONFIRMED");
+        push_text_prop(&mut ics, "X-ACADEMIC-ROUTINE-SECTION", &entry.section);
 
-        // 30-minute sound/display notification alarm
         ics.push_str("BEGIN:VALARM\r\n");
-        ics.push_str("TRIGGER:-PT30M\r\n");
-        ics.push_str("ACTION:DISPLAY\r\n");
-        ics.push_str(&format!(
-            "DESCRIPTION:Class Reminder: {} in {}\r\n",
-            escape_ics(&entry.code),
-            escape_ics(&location)
-        ));
+        push_prop(&mut ics, "TRIGGER", "-PT30M");
+        push_prop(&mut ics, "ACTION", "DISPLAY");
+        push_text_prop(
+            &mut ics,
+            "DESCRIPTION",
+            &format!("Class Reminder: {} in {}", entry.code, location),
+        );
         ics.push_str("END:VALARM\r\n");
 
         ics.push_str("END:VEVENT\r\n");
@@ -114,7 +137,103 @@ pub fn export_ics_file(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(output_path, ics_content)
+    // Write to a sibling temp file and rename so a crash cannot truncate a good feed.
+    let tmp = output_path.with_extension("ics.tmp");
+    fs::write(&tmp, ics_content)?;
+    fs::rename(&tmp, output_path)
+}
+
+/// Appends a folded `NAME:value` property line with RFC 5545 text escaping.
+fn push_text_prop(out: &mut String, name: &str, value: &str) {
+    let line = format!("{name}:{}", escape_ics(value));
+    out.push_str(&fold_ical_line(&line));
+}
+
+/// Appends a folded `NAME:value` property line without escaping structured fields (RRULE, DATES, UID).
+fn push_prop(out: &mut String, name: &str, value: &str) {
+    let line = format!("{name}:{value}");
+    out.push_str(&fold_ical_line(&line));
+}
+
+/// Folds one logical property line at [`MAX_LINE_OCTETS`], never splitting a UTF-8 char.
+#[must_use]
+fn fold_ical_line(line: &str) -> String {
+    let mut out = String::new();
+    let mut current = String::new();
+    let mut octets = 0usize;
+
+    for ch in line.chars() {
+        let width = ch.len_utf8();
+        if octets + width > MAX_LINE_OCTETS {
+            out.push_str(&current);
+            out.push_str("\r\n ");
+            current.clear();
+            current.push(' ');
+            octets = 1;
+        }
+        current.push(ch);
+        octets += width;
+    }
+
+    out.push_str(&current);
+    out.push_str("\r\n");
+    out
+}
+
+/// Escapes special characters for RFC 5545 text values and strips control chars.
+fn escape_ics(text: &str) -> String {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut escaped = String::with_capacity(normalized.len());
+    for ch in normalized.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            ';' => escaped.push_str("\\;"),
+            ',' => escaped.push_str("\\,"),
+            '\n' => escaped.push_str("\\n"),
+            '\t' => escaped.push('\t'),
+            c if c.is_control() => {}
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+
+fn local_offset_seconds() -> i32 {
+    std::env::var("ROUTINE_TIMEZONE_OFFSET")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .map(|hours| hours * 3600)
+        .unwrap_or(6 * 3600)
+}
+
+fn local_offset() -> i32 {
+    local_offset_seconds()
+}
+
+fn format_offset_name(offset_seconds: i32) -> String {
+    format!(
+        "{}{:02}:{:02}",
+        if offset_seconds < 0 { "-" } else { "+" },
+        offset_seconds.abs() / 3600,
+        (offset_seconds.abs() % 3600) / 60
+    )
+}
+
+/// Converts a local end-of-day date into the UTC compact form used by `UNTIL`.
+fn until_utc_compact(date: NaiveDate, offset_seconds: i32) -> String {
+    let offset = FixedOffset::east_opt(offset_seconds)
+        .or_else(|| FixedOffset::west_opt(-offset_seconds))
+        .unwrap_or_else(|| FixedOffset::east_opt(6 * 3600).expect("UTC+6 is valid"));
+    let local = date
+        .and_hms_opt(23, 59, 59)
+        .expect("end-of-day is a valid time");
+    offset
+        .from_local_datetime(&local)
+        .single()
+        .expect("fixed offset always resolves")
+        .with_timezone(&Utc)
+        .format("%Y%m%dT%H%M%SZ")
+        .to_string()
 }
 
 /// Finds the next upcoming calendar date matching the specified academic weekday on or after `reference`.
@@ -136,14 +255,6 @@ fn next_matching_weekday(day: DayOfWeek, reference: NaiveDate) -> NaiveDate {
     current
 }
 
-/// Escapes special characters for RFC 5545 text values.
-fn escape_ics(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace(';', "\\;")
-        .replace(',', "\\,")
-        .replace('\n', "\\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,7 +268,7 @@ mod tests {
         let slot = TimeSlot::from_str("09:15 - 10:30").unwrap();
         let e = CourseEntry::new("CSE-4101", "AI", "B", DayOfWeek::Mon, slot, "120", t);
 
-        let sched = Schedule::new("L4T1", None, vec![e]);
+        let sched = Schedule::new("L4T1", Some("2026-10-17T13:03:50Z".to_string()), vec![e]);
         let end_date = NaiveDate::from_ymd_opt(2026, 11, 30);
         let ics = generate_ics(&sched, end_date);
 
@@ -165,15 +276,81 @@ mod tests {
         assert!(ics.starts_with("BEGIN:VCALENDAR\r\n"));
         assert!(ics.ends_with("END:VCALENDAR\r\n"));
         assert!(ics.contains("VERSION:2.0\r\n"));
-        assert!(ics.contains("UID:cse4101-mon-091500@academic-routine\r\n"));
+        assert!(ics.contains("CALSCALE:GREGORIAN\r\n"));
+        assert!(ics.contains("METHOD:PUBLISH\r\n"));
+        assert!(ics.contains("X-WR-TIMEZONE:Asia/Dhaka\r\n"));
+        assert!(ics.contains("BEGIN:VTIMEZONE\r\n"));
+        assert!(ics.contains("TZID:Asia/Dhaka\r\n"));
+        assert!(ics.find("BEGIN:VTIMEZONE").unwrap() < ics.find("BEGIN:VEVENT").unwrap());
+        assert!(ics.contains("UID:cse4101-b-mon-091500@academic-routine\r\n"));
         assert!(ics.contains("SUMMARY:[B] CSE-4101: AI\r\n"));
         assert!(ics.contains("LOCATION:Room 120\r\n"));
-        assert!(ics.contains("RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261130T235959Z\r\n"));
+        assert!(ics.contains("RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261130T175959Z\r\n"));
+        assert!(ics.contains("DTSTAMP:20261017T130350Z\r\n"));
 
         // Verify 30-minute alarm
         assert!(ics.contains("BEGIN:VALARM\r\n"));
         assert!(ics.contains("TRIGGER:-PT30M\r\n"));
         assert!(ics.contains("END:VALARM\r\n"));
+    }
+
+    #[test]
+    fn test_all_physical_lines_fold_at_75_octets() {
+        let teacher = TeacherContact::new(
+            "Professor With A Very Long Name For Folding",
+            Some("+8801700000000".into()),
+            Some("verylongmailbox@example-university.edu.bd".into()),
+        );
+        let slot = TimeSlot::from_str("09:15 - 10:30").unwrap();
+        let entry = CourseEntry::new(
+            "CSE-4101",
+            "Advanced Topics In Artificial Intelligence And Distributed Systems",
+            "B2",
+            DayOfWeek::Mon,
+            slot,
+            "Lab 1 & 2",
+            teacher,
+        );
+        let ics = generate_ics(&Schedule::new("L4T1", None, vec![entry]), None);
+
+        for line in ics.split("\r\n") {
+            assert!(
+                line.len() <= 75,
+                "line exceeds 75 octets ({}): {line}",
+                line.len()
+            );
+        }
+        // Unfold and ensure the full description survived intact.
+        let unfolded = ics.replace("\r\n ", "");
+        assert!(unfolded.contains("Advanced Topics In Artificial Intelligence"));
+        assert!(unfolded.contains("Lab 1 & 2"));
+    }
+
+    #[test]
+    fn test_emoji_near_fold_boundary_is_not_split() {
+        let teacher = TeacherContact::new("🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓", None, None);
+        let slot = TimeSlot::from_str("08:00 - 09:15").unwrap();
+        let entry = CourseEntry::new(
+            "CSE-4101",
+            "🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓🎓",
+            "B",
+            DayOfWeek::Tue,
+            slot,
+            "🎓",
+            teacher,
+        );
+        let ics = generate_ics(&Schedule::new("🎓 Term", None, vec![entry]), None);
+        assert!(ics.contains("🎓"));
+        for line in ics.split("\r\n") {
+            assert!(line.len() <= 75);
+        }
+    }
+
+    #[test]
+    fn test_escape_and_control_characters() {
+        assert_eq!(escape_ics("a;b,c\\d"), "a\\;b\\,c\\\\d");
+        assert_eq!(escape_ics("line1\r\nline2"), "line1\\nline2");
+        assert_eq!(escape_ics("bell\u{0007}tab\t"), "belltab\t");
     }
 
     #[test]
