@@ -966,6 +966,13 @@ impl FileStamp {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RefreshOutcome {
+    Unchanged,
+    Reloaded,
+    Blocked(StateError),
+}
+
 #[derive(Debug)]
 struct StoreInner {
     state: RoutineState,
@@ -973,23 +980,30 @@ struct StoreInner {
 }
 
 impl StoreInner {
-    fn refresh(&mut self, path: &Path) {
+    fn refresh(&mut self, path: &Path) -> RefreshOutcome {
         let current_stamp = FileStamp::from_path(path);
         if current_stamp.is_some() && current_stamp == self.stamp {
-            return;
+            return RefreshOutcome::Unchanged;
         }
 
         match RoutineState::load(path) {
             Ok(Some(fresh)) => {
                 self.state = fresh;
                 self.stamp = current_stamp;
+                RefreshOutcome::Reloaded
             }
             Ok(None) => {
                 // File was removed externally; keep in-memory copy, clear stamp
                 self.stamp = None;
+                RefreshOutcome::Reloaded
+            }
+            Err(e @ StateError::UnsupportedVersion { .. }) => {
+                eprintln!("⚠️ state refresh blocked: {e}");
+                RefreshOutcome::Blocked(e)
             }
             Err(e) => {
                 eprintln!("⚠️ state refresh skipped: {e}");
+                RefreshOutcome::Reloaded
             }
         }
     }
@@ -998,8 +1012,10 @@ impl StoreInner {
 /// Thread-safe owner of the in-memory state and its on-disk path.
 ///
 /// Handlers mutate through [`StateStore::update`], which holds the lock across
-/// the mutation and the atomic save, eliminating lost updates. Never call back
-/// into the store from inside an `update` closure.
+/// the mutation and the atomic save, eliminating lost updates within the process.
+/// External updates are reloaded before each operation; mutations are refused if
+/// the on-disk file was written with a newer, unsupported schema version.
+/// Never call back into the store from inside an `update` closure.
 #[derive(Debug, Clone)]
 pub struct StateStore {
     path: PathBuf,
@@ -1050,18 +1066,20 @@ impl StateStore {
     #[must_use]
     pub fn read(&self) -> RoutineState {
         let mut guard = self.lock();
-        guard.refresh(&self.path);
+        let _ = guard.refresh(&self.path);
         guard.state.clone()
     }
 
     /// Applies a mutation and persists the result atomically.
     ///
     /// # Errors
-    /// Returns [`StateError`] if the save fails. The in-memory mutation remains
-    /// applied, so callers should report the error to the user/admin.
+    /// Returns [`StateError`] if the save fails or if the on-disk file was written
+    /// by a newer schema version.
     pub fn update<R>(&self, mutate: impl FnOnce(&mut RoutineState) -> R) -> Result<R, StateError> {
         let mut guard = self.lock();
-        guard.refresh(&self.path);
+        if let RefreshOutcome::Blocked(err) = guard.refresh(&self.path) {
+            return Err(err);
+        }
         let result = mutate(&mut guard.state);
         guard.state.save(&self.path)?;
         guard.stamp = FileStamp::from_path(&self.path);
@@ -1071,7 +1089,7 @@ impl StateStore {
     /// Applies a mutation without saving (for read-only projections).
     pub fn with_state<R>(&self, inspect: impl FnOnce(&RoutineState) -> R) -> R {
         let mut guard = self.lock();
-        guard.refresh(&self.path);
+        let _ = guard.refresh(&self.path);
         inspect(&guard.state)
     }
 
@@ -1646,6 +1664,24 @@ mod tests {
         fs::write(&path, future_json).unwrap();
 
         assert!(store.read().is_dropped("CSE-4101"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), future_json);
+    }
+
+    #[test]
+    fn test_update_after_unsupported_refresh_is_refused() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store, _) = StateStore::open(path.clone()).unwrap();
+        store.update(|s| s.drop_course("CSE-4101")).unwrap();
+
+        let future_json = r#"{"schema_version": 99, "semester_name": "Future"}"#;
+        fs::write(&path, future_json).unwrap();
+
+        let result = store.update(|s| s.drop_course("CSE-4102"));
+        assert!(matches!(
+            result,
+            Err(StateError::UnsupportedVersion { found: 99, .. })
+        ));
         assert_eq!(fs::read_to_string(&path).unwrap(), future_json);
     }
 
