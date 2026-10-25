@@ -3,20 +3,25 @@
 Google Sheets Routine Synchronizer for academic-routine.
 
 Synchronizes scraped academic routine data directly to Google Spreadsheet
-(updating both 'backend' and 'NewMain' worksheets).
+(updating both 'backend' and 'NewMain' worksheets) using update-first,
+clear-tail semantics so a failed sync never leaves the sheet blank.
 """
 
 import argparse
-from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
-from pathlib import Path
 import re
 import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
-import gspread
+
+try:
+    import gspread
+except ImportError:  # pragma: no cover - only hit when sheets deps are absent
+    gspread = None
 
 load_dotenv()
 
@@ -119,7 +124,7 @@ def format_one_time(text: str) -> tuple[str, int]:
 
 
 def parse_and_format_time_slot(slot: str) -> tuple[str, int]:
-    """Formats full slot (e.g. '8:0 AM - 9:15 AM' or '11:45 - 1:0') into clean 12h range and returns start minute."""
+    """Formats full slot (e.g. '8:0 AM - 9:15 AM') and returns start minute."""
     if not slot or (isinstance(slot, str) and not slot.strip()):
         return "", 99999
 
@@ -177,7 +182,22 @@ def build_newmain_rows(entries: list[dict]) -> list[list]:
     return [t[2] for t in decorated]
 
 
-def get_or_create_worksheet(spreadsheet: gspread.Spreadsheet, sheet_name: str, rows=100, cols=20):
+def _used_last_row(ws, *, min_row: int = 1, min_col: int = 1, max_col: int | None = None) -> int:
+    """Returns the last row containing data in the selected column window."""
+    values = ws.get_all_values()
+    last = 0
+    for row_idx, row in enumerate(values, start=1):
+        if row_idx < min_row:
+            continue
+        end = min(len(row), max_col) if max_col else len(row)
+        for col_idx in range(min_col, end + 1):
+            if str(row[col_idx - 1]).strip():
+                last = row_idx
+                break
+    return last
+
+
+def get_or_create_worksheet(spreadsheet, sheet_name: str, rows=100, cols=20):
     """Retrieves or creates a worksheet, seeding headers if creating NewMain."""
     try:
         ws = spreadsheet.worksheet(sheet_name)
@@ -191,7 +211,7 @@ def get_or_create_worksheet(spreadsheet: gspread.Spreadsheet, sheet_name: str, r
     return ws
 
 
-def grow_worksheet(ws: gspread.Worksheet, min_rows: int, min_cols: int):
+def grow_worksheet(ws, min_rows: int, min_cols: int):
     """Grows a worksheet if row/column capacity is insufficient."""
     cur_rows = ws.row_count
     cur_cols = ws.col_count
@@ -199,10 +219,165 @@ def grow_worksheet(ws: gspread.Worksheet, min_rows: int, min_cols: int):
     target_cols = max(cur_cols, min_cols)
     if target_rows > cur_rows or target_cols > cur_cols:
         ws.resize(rows=target_rows, cols=target_cols)
-        logger.info("Resized '%s' from %dx%d to %dx%d.", ws.title, cur_rows, cur_cols, target_rows, target_cols)
+        logger.info(
+            "Resized '%s' from %dx%d to %dx%d.",
+            ws.title,
+            cur_rows,
+            cur_cols,
+            target_rows,
+            target_cols,
+        )
 
 
-def sync_to_google_sheet(json_path: Path, key_path: Path, spreadsheet_name: str) -> bool:
+def sync_backend_worksheet(ws, entries: list[dict], dry_run: bool = False) -> dict:
+    """Updates 'backend' first, then clears only the stale tail rows.
+
+    The update is issued before any clear call. If the update raises, the sheet is
+    left with its previous contents instead of being blanked first.
+    """
+    rows = build_sheet_data(entries)
+    old_rows = _used_last_row(ws, min_row=1, min_col=1, max_col=len(SHEET_HEADERS))
+    last_col = column_letter(len(SHEET_HEADERS))
+    clear_ranges = []
+    if old_rows > len(rows):
+        clear_ranges.append(f"A{len(rows) + 1}:{last_col}{old_rows}")
+
+    plan = {
+        "worksheet": BACKEND_SHEET_NAME,
+        "new_rows": len(rows),
+        "old_rows": old_rows,
+        "write_range": "A1",
+        "clear_ranges": clear_ranges,
+    }
+    logger.info(
+        "[%s] rows old=%d new=%d; write %s before clearing %s",
+        BACKEND_SHEET_NAME,
+        old_rows,
+        len(rows),
+        plan["write_range"],
+        clear_ranges or "nothing",
+    )
+    if dry_run:
+        return plan
+
+    ws.update(values=rows, range_name="A1")
+    if clear_ranges:
+        ws.batch_clear(clear_ranges)
+    ws.format(f"H2:H{len(rows)}", {"wrapStrategy": "WRAP"})
+    logger.info(
+        "✅ Successfully updated '%s' (%d rows, cleared tail %s).",
+        BACKEND_SHEET_NAME,
+        len(rows),
+        clear_ranges or "none",
+    )
+    return plan
+
+
+def sync_newmain_worksheet(ws, entries: list[dict], dry_run: bool = False) -> dict:
+    """Updates 'NewMain' data first, then clears stale tails and stray columns."""
+    newmain_rows = build_newmain_rows(entries)
+    old_last_row = _used_last_row(
+        ws,
+        min_row=DATA_START_ROW,
+        min_col=DATA_START_COL,
+        max_col=DATA_START_COL + DATA_WIDTH - 1,
+    )
+
+    if newmain_rows:
+        last_data_row = DATA_START_ROW - 1 + len(newmain_rows)
+        write_values = newmain_rows
+    else:
+        last_data_row = DATA_START_ROW
+        write_values = [[NO_DATA_MESSAGE]]
+
+    clear_ranges = []
+    if old_last_row > last_data_row:
+        # Clear the whole stale tail (including an old stamp) in one shot.
+        clear_ranges.append(f"B{last_data_row + 1}:Z{old_last_row}")
+    if ws.col_count > DATA_START_COL + DATA_WIDTH - 1:
+        # Drop stray columns beyond the I column for the live data rows.
+        clear_ranges.append(f"J{DATA_START_ROW}:Z{last_data_row}")
+
+    stamp_row = last_data_row + 2
+    stamp_col = column_letter(STAMP_COLUMN)
+    plan = {
+        "worksheet": NEW_MAIN_SHEET_NAME,
+        "new_rows": len(newmain_rows),
+        "old_rows": max(old_last_row - DATA_START_ROW + 1, 0),
+        "write_range": "B4",
+        "last_data_row": last_data_row,
+        "clear_ranges": clear_ranges,
+        "stamp_range": f"{stamp_col}{stamp_row}",
+    }
+    logger.info(
+        "[%s] rows old=%d new=%d; write %s before clearing %s",
+        NEW_MAIN_SHEET_NAME,
+        plan["old_rows"],
+        len(newmain_rows),
+        plan["write_range"],
+        clear_ranges or "nothing",
+    )
+    if dry_run:
+        return plan
+
+    # Header is static, then the data overwrite, then the tail clear.
+    ws.update(values=[SHEET_HEADERS], range_name="B3")
+    ws.format("B3:I3", {"textFormat": {"bold": True}})
+    ws.update(values=write_values, range_name="B4", value_input_option="RAW")
+    if clear_ranges:
+        ws.batch_clear(clear_ranges)
+
+    # Write footer stamp
+    now_dt = datetime.now(timezone.utc)
+    ws.update(values=[[format_stamp(now_dt)]], range_name=f"{stamp_col}{stamp_row}")
+    ws.update(values=[[SIGNATURE]], range_name=f"{stamp_col}{stamp_row + 1}")
+    ws.format(f"{stamp_col}{stamp_row}", {"horizontalAlignment": "LEFT"})
+    ws.format(f"{stamp_col}{stamp_row + 1}", {"horizontalAlignment": "RIGHT"})
+
+    # Wrap contact column (Teacher Phone and Email) in NewMain.
+    contact_col_idx = DATA_START_COL + SHEET_HEADERS.index("Teacher Phone and Email")
+    contact_letter = column_letter(contact_col_idx)
+    ws.format(f"{contact_letter}4:{contact_letter}{last_data_row}", {"wrapStrategy": "WRAP"})
+
+    logger.info(
+        "✅ Successfully updated '%s' (%d sorted rows, cleared tail %s).",
+        NEW_MAIN_SHEET_NAME,
+        len(newmain_rows),
+        clear_ranges or "none",
+    )
+    return plan
+
+
+def preview_sync_plan(entries: list[dict]) -> dict:
+    """Builds the intended ranges without authenticating to Google."""
+    backend_rows = build_sheet_data(entries)
+    newmain_rows = build_newmain_rows(entries)
+    last_data_row = (
+        DATA_START_ROW - 1 + len(newmain_rows) if newmain_rows else DATA_START_ROW
+    )
+    stamp_col = column_letter(STAMP_COLUMN)
+    return {
+        "backend": {
+            "new_rows": len(backend_rows),
+            "write_range": "A1",
+            "tail_cleared_after_update_if_needed": f"A{len(backend_rows) + 1}:H",
+        },
+        "newmain": {
+            "new_rows": len(newmain_rows),
+            "write_range": "B4",
+            "last_data_row": last_data_row,
+            "tail_cleared_after_update_if_needed": f"B{last_data_row + 1}:Z",
+            "stamp_range": f"{stamp_col}{last_data_row + 2}",
+        },
+    }
+
+
+def sync_to_google_sheet(
+    json_path: Path,
+    key_path: Path,
+    spreadsheet_name: str,
+    dry_run: bool = False,
+) -> bool:
     """Executes full synchronization of routine_data.json to the Google Spreadsheet."""
     if not json_path.exists():
         logger.error("Data JSON not found at '%s'.", json_path)
@@ -217,6 +392,15 @@ def sync_to_google_sheet(json_path: Path, key_path: Path, spreadsheet_name: str)
         return False
 
     logger.info("Loaded %d routine entries from '%s'.", len(entries), json_path)
+
+    if dry_run:
+        plan = preview_sync_plan(entries)
+        logger.info("Dry run plan (no Google API calls): %s", json.dumps(plan, indent=2))
+        return True
+
+    if gspread is None:
+        logger.error("gspread is not installed; run 'uv sync --locked'.")
+        return False
 
     # Resolve service account key
     if not key_path.exists():
@@ -235,60 +419,18 @@ def sync_to_google_sheet(json_path: Path, key_path: Path, spreadsheet_name: str)
     try:
         ws_backend = get_or_create_worksheet(sh, BACKEND_SHEET_NAME)
         grow_worksheet(ws_backend, len(entries) + 10, len(SHEET_HEADERS) + 2)
-        backend_rows = build_sheet_data(entries)
-        ws_backend.clear()
-        ws_backend.update(values=backend_rows, range_name="A1")
-        # Format contact column with text wrap
-        ws_backend.format("H2:H" + str(len(backend_rows)), {"wrapStrategy": "WRAP"})
-        logger.info("✅ Successfully updated '%s' (%d rows).", BACKEND_SHEET_NAME, len(backend_rows))
+        sync_backend_worksheet(ws_backend, entries)
     except Exception as e:
-        logger.error("Error updating '%s': %s", BACKEND_SHEET_NAME, e)
+        logger.error("Error updating '%s' (old contents preserved): %s", BACKEND_SHEET_NAME, e)
         return False
 
     # 2. Update 'NewMain' worksheet
     try:
         ws_main = get_or_create_worksheet(sh, NEW_MAIN_SHEET_NAME)
         grow_worksheet(ws_main, len(entries) + 15, DATA_START_COL + DATA_WIDTH + 1)
-
-        # Seed or refresh header at B3:I3
-        ws_main.update(values=[SHEET_HEADERS], range_name="B3")
-        ws_main.format("B3:I3", {"textFormat": {"bold": True}})
-
-        newmain_rows = build_newmain_rows(entries)
-        if newmain_rows:
-            ws_main.update(values=newmain_rows, range_name="B4", value_input_option="RAW")
-            last_data_row = DATA_START_ROW - 1 + len(newmain_rows)
-        else:
-            ws_main.update(values=[[NO_DATA_MESSAGE]], range_name="B4")
-            last_data_row = DATA_START_ROW
-
-        # Clear stale tail below data and any stray columns beyond I
-        stale_from = last_data_row + 1
-        clear_ranges = []
-        if stale_from <= ws_main.row_count:
-            clear_ranges.append(f"B{stale_from}:Z{ws_main.row_count}")
-        if ws_main.col_count > DATA_START_COL + DATA_WIDTH - 1:
-            clear_ranges.append(f"J4:Z{last_data_row}")
-        if clear_ranges:
-            ws_main.batch_clear(clear_ranges)
-
-        # Write footer stamp
-        stamp_row = last_data_row + 2
-        stamp_col = column_letter(STAMP_COLUMN)
-        now_dt = datetime.now(timezone.utc)
-        ws_main.update(values=[[format_stamp(now_dt)]], range_name=f"{stamp_col}{stamp_row}")
-        ws_main.update(values=[[SIGNATURE]], range_name=f"{stamp_col}{stamp_row + 1}")
-        ws_main.format(f"{stamp_col}{stamp_row}", {"horizontalAlignment": "LEFT"})
-        ws_main.format(f"{stamp_col}{stamp_row + 1}", {"horizontalAlignment": "RIGHT"})
-
-        # Wrap contact column in NewMain (Column I is stamp, Column I in B-based is Col 9 => Col H in 0-based is B+7 = I)
-        contact_col_idx = DATA_START_COL + SHEET_HEADERS.index("Teacher Phone and Email")
-        contact_letter = column_letter(contact_col_idx)
-        ws_main.format(f"{contact_letter}4:{contact_letter}{last_data_row}", {"wrapStrategy": "WRAP"})
-
-        logger.info("✅ Successfully updated '%s' (%d sorted rows).", NEW_MAIN_SHEET_NAME, len(newmain_rows))
+        sync_newmain_worksheet(ws_main, entries)
     except Exception as e:
-        logger.error("Error updating '%s': %s", NEW_MAIN_SHEET_NAME, e)
+        logger.error("Error updating '%s' (old contents preserved): %s", NEW_MAIN_SHEET_NAME, e)
         return False
 
     return True
@@ -299,20 +441,19 @@ def main():
     parser.add_argument("--data", type=Path, default=Path("output/routine_data.json"))
     parser.add_argument("--key", type=Path, default=None)
     parser.add_argument("--sheet", type=str, default=None)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print computed ranges and row counts without calling the Google API",
+    )
     args = parser.parse_args()
 
-    # Resolve routine data path
     data_path = args.data
     if not data_path.exists():
         fallback_root = Path("routine_data.json")
         if fallback_root.exists():
             data_path = fallback_root
-        else:
-            fallback_legacy = Path("output_of_fetched_routine/final_combined_routine.json")
-            if fallback_legacy.exists():
-                data_path = fallback_legacy
 
-    # Resolve key path
     key_path = (
         args.key
         or Path(os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "google_cloud_keys/service_account_key.json"))
@@ -320,7 +461,7 @@ def main():
 
     sheet_name = args.sheet or os.getenv("SPREADSHEET_NAME", "CSE-03_B_ClassRoutine")
 
-    success = sync_to_google_sheet(data_path, key_path, sheet_name)
+    success = sync_to_google_sheet(data_path, key_path, sheet_name, dry_run=args.dry_run)
     sys.exit(0 if success else 1)
 
 

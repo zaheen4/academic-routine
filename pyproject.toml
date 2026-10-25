@@ -7,10 +7,24 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "google-auth>=2.0.0",
     "gspread>=6.0.0",
-    "nodriver>=0.38",
+    "nodriver>=0.50.6,<0.51",
     "python-dotenv>=1.0.0",
     "requests>=2.31.0",
 ]
 
+# PEP 735 development group: installed by `uv sync`, excluded by `uv sync --no-dev`.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+testpaths = ["scraper/tests"]
+addopts = "-ra"
+
+[tool.ruff.lint]
+ignore = ["BLE001"]
