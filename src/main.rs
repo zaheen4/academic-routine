@@ -1,43 +1,14 @@
 use academic_routine::cli::{Cli, Commands};
 use academic_routine::{
     academic_now, current_academic_day, export_ics_file, load_routine_file, render_day_table,
-    render_teacher_card, render_today_card, render_weekly_overview, DayOfWeek, StateStore,
+    render_teacher_card, render_today_card, render_weekly_overview, resolve_routine_path,
+    resolve_write_target, DayOfWeek, StateStore,
 };
 use chrono::Timelike;
 use clap::Parser;
 use colored::Colorize;
 use std::path::PathBuf;
 use std::str::FromStr;
-
-fn resolve_routine_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
-    if let Some(p) = explicit {
-        if p.exists() {
-            return Some(p.clone());
-        }
-    }
-
-    let output_data = PathBuf::from("output/routine_data.json");
-    if output_data.exists() {
-        return Some(output_data);
-    }
-
-    let local_data = PathBuf::from("routine_data.json");
-    if local_data.exists() {
-        return Some(local_data);
-    }
-
-    let output_final = PathBuf::from("output/final_combined_routine.json");
-    if output_final.exists() {
-        return Some(output_final);
-    }
-
-    let local_path = PathBuf::from("final_combined_routine.json");
-    if local_path.exists() {
-        return Some(local_path);
-    }
-
-    None
-}
 
 fn state_path() -> PathBuf {
     let output_state = PathBuf::from("output/routine_state.json");
@@ -72,17 +43,6 @@ async fn main() {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
-    if let Some(ref explicit) = cli.file {
-        if !explicit.exists() {
-            eprintln!(
-                "{} Specified routine file does not exist: {}",
-                "❌".red().bold(),
-                explicit.display()
-            );
-            std::process::exit(1);
-        }
-    }
-
     let state_file = state_path();
     let (store, recovery_note) = match StateStore::open(state_file.clone()) {
         Ok(res) => res,
@@ -106,10 +66,17 @@ async fn main() {
                     PathBuf::from("routine_data.prev.json")
                 }
             });
-            let curr_path = current.clone().unwrap_or_else(|| {
-                resolve_routine_path(cli.file.as_ref())
-                    .unwrap_or_else(|| PathBuf::from("output/routine_data.json"))
-            });
+            let curr_path = match current.clone() {
+                Some(p) => p,
+                None => match resolve_routine_path(cli.file.as_ref()) {
+                    Ok(Some(p)) => p,
+                    Ok(None) => PathBuf::from("output/routine_data.json"),
+                    Err(e) => {
+                        eprintln!("{} {e}", "❌".red().bold());
+                        std::process::exit(1);
+                    }
+                },
+            };
 
             if !prev_path.exists() {
                 eprintln!(
@@ -212,8 +179,14 @@ async fn main() {
                     "ℹ️".green()
                 );
             } else {
-                let raw_sched = resolve_routine_path(cli.file.as_ref())
-                    .and_then(|p| load_routine_file(&p).ok());
+                let raw_sched = match resolve_routine_path(cli.file.as_ref()) {
+                    Ok(Some(p)) => load_routine_file(&p).ok(),
+                    Ok(None) => None,
+                    Err(e) => {
+                        eprintln!("{} {e}", "❌".red().bold());
+                        std::process::exit(1);
+                    }
+                };
                 println!("{} Currently completed courses:", "🎓".cyan().bold());
                 for c in &state.dropped_courses {
                     let title_opt = raw_sched
@@ -239,7 +212,13 @@ async fn main() {
             println!("│             🎓 Academic Routine Subsystem Status             │");
             println!("├──────────────────────────────────────────────────────────────┤");
 
-            let routine_opt = resolve_routine_path(cli.file.as_ref());
+            let routine_opt = match resolve_routine_path(cli.file.as_ref()) {
+                Ok(res) => res,
+                Err(e) => {
+                    eprintln!("{} {e}", "❌".red().bold());
+                    std::process::exit(1);
+                }
+            };
             match routine_opt {
                 Some(ref p) => {
                     if let Ok(raw) = load_routine_file(p) {
@@ -665,10 +644,7 @@ async fn main() {
                     .cyan()
                     .bold()
             );
-            let target_json = cli
-                .file
-                .clone()
-                .unwrap_or_else(|| PathBuf::from("output/routine_data.json"));
+            let target_json = resolve_write_target(cli.file.as_ref());
 
             match academic_routine::run_ucam_scraper_opts_force(&target_json, *headed, *force) {
                 Ok(path) => {
@@ -798,10 +774,27 @@ async fn main() {
             return;
         }
         Some(Commands::SyncGsheet { file }) => {
-            let target_json = file
-                .clone()
-                .or_else(|| resolve_routine_path(cli.file.as_ref()))
-                .unwrap_or_else(|| PathBuf::from("output/routine_data.json"));
+            let target_json = match file.clone() {
+                Some(f) => {
+                    if !f.exists() {
+                        eprintln!(
+                            "{} Specified routine file does not exist: {}",
+                            "❌".red().bold(),
+                            f.display()
+                        );
+                        std::process::exit(1);
+                    }
+                    f
+                }
+                None => match resolve_routine_path(cli.file.as_ref()) {
+                    Ok(Some(p)) => p,
+                    Ok(None) => PathBuf::from("output/routine_data.json"),
+                    Err(e) => {
+                        eprintln!("{} {e}", "❌".red().bold());
+                        std::process::exit(1);
+                    }
+                },
+            };
 
             let sheet_name = std::env::var("SPREADSHEET_NAME")
                 .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
@@ -828,8 +821,14 @@ async fn main() {
             return;
         }
         Some(Commands::Bot { no_http }) => {
-            let routine_path = resolve_routine_path(cli.file.as_ref())
-                .unwrap_or_else(|| PathBuf::from("output/routine_data.json"));
+            let routine_path = match resolve_routine_path(cli.file.as_ref()) {
+                Ok(Some(p)) => p,
+                Ok(None) => PathBuf::from("output/routine_data.json"),
+                Err(e) => {
+                    eprintln!("{} {e}", "❌".red().bold());
+                    std::process::exit(1);
+                }
+            };
 
             let default_sec = cli
                 .section
@@ -859,14 +858,18 @@ async fn main() {
 
     // Resolve routine file path
     let routine_path = match resolve_routine_path(cli.file.as_ref()) {
-        Some(p) => p,
-        None => {
+        Ok(Some(p)) => p,
+        Ok(None) => {
             eprintln!(
                 "{} No routine JSON file found. Specify one with {} or place it at {}",
                 "❌".red().bold(),
                 "--file <PATH>".cyan(),
                 "final_combined_routine.json".yellow()
             );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{} {e}", "❌".red().bold());
             std::process::exit(1);
         }
     };
@@ -1094,8 +1097,14 @@ async fn main() {
                 "{} Syncing routine, calendar, and metadata to GitHub Gist...",
                 "🔄".cyan()
             );
-            let json_path = resolve_routine_path(cli.file.as_ref())
-                .unwrap_or_else(|| PathBuf::from("output/routine_data.json"));
+            let json_path = match resolve_routine_path(cli.file.as_ref()) {
+                Ok(Some(p)) => p,
+                Ok(None) => PathBuf::from("output/routine_data.json"),
+                Err(e) => {
+                    eprintln!("{} {e}", "❌".red().bold());
+                    std::process::exit(1);
+                }
+            };
             let result = if json_path.exists() {
                 academic_routine::sync_gist_bundle(gid, &ics_path, &json_path, &state.public_meta())
                     .await

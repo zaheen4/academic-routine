@@ -38,13 +38,8 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
         println!("✨ Successfully registered command menu with Telegram ('/' suggestions active)!");
     }
 
+    let admin_chat_id = ctx.admin_chat_id.unwrap_or(0);
     let shared_ctx = Arc::new(ctx);
-
-    // Parse optional admin TELEGRAM_CHAT_ID
-    let admin_chat_id = std::env::var("TELEGRAM_CHAT_ID")
-        .ok()
-        .and_then(|s| s.trim().parse::<i64>().ok())
-        .unwrap_or(0);
 
     // Spawn 6:00 AM morning briefing scheduler daemon for all registered users
     let sched_bot = bot.clone();

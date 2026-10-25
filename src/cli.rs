@@ -195,3 +195,50 @@ pub enum Commands {
         no_gsheet: bool,
     },
 }
+
+/// Resolves a write target path, defaulting to `output/routine_data.json` if not specified.
+/// Does not require the path to exist on disk.
+#[must_use]
+pub fn resolve_write_target(explicit: Option<&PathBuf>) -> PathBuf {
+    explicit
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("output/routine_data.json"))
+}
+
+/// Resolves the routine data JSON path from an explicit CLI argument or fallback locations.
+///
+/// # Errors
+/// Returns an error message if an explicit path was supplied but does not exist on disk.
+pub fn resolve_routine_path(explicit: Option<&PathBuf>) -> Result<Option<PathBuf>, String> {
+    if let Some(p) = explicit {
+        if p.exists() {
+            return Ok(Some(p.clone()));
+        }
+        return Err(format!(
+            "Specified routine file does not exist: {}",
+            p.display()
+        ));
+    }
+
+    let output_data = PathBuf::from("output/routine_data.json");
+    if output_data.exists() {
+        return Ok(Some(output_data));
+    }
+
+    let local_data = PathBuf::from("routine_data.json");
+    if local_data.exists() {
+        return Ok(Some(local_data));
+    }
+
+    let output_final = PathBuf::from("output/final_combined_routine.json");
+    if output_final.exists() {
+        return Ok(Some(output_final));
+    }
+
+    let local_path = PathBuf::from("final_combined_routine.json");
+    if local_path.exists() {
+        return Ok(Some(local_path));
+    }
+
+    Ok(None)
+}
