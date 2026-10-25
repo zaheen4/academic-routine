@@ -18,13 +18,13 @@ pub mod model;
 pub use bot::{run_bot_daemon, BotContext, Command};
 pub use cli::{Cli, Commands};
 pub use engine::{
-    load_routine_file, parse_routine_json, run_gsheet_sync, run_ucam_scraper, run_ucam_scraper_opts,
-    IngestError, ScraperError,
+    load_routine_file, parse_routine_json, run_gsheet_sync, run_ucam_scraper,
+    run_ucam_scraper_opts, run_ucam_scraper_opts_force, IngestError, ScraperError,
 };
 pub use exporters::{
-    export_ics_file, fetch_gist_routine_data, fetch_gist_state_data, generate_ics, render_day_table,
+    export_ics_file, fetch_gist_meta_data, fetch_gist_routine_data, generate_ics, render_day_table,
     render_teacher_card, render_today_card, render_weekly_overview, sync_gist_bundle,
-    sync_gist_bundle_with_state, sync_gist_file,
+    sync_gist_file,
 };
 pub use model::{
     academic_now, codes_match, current_academic_day, next_academic_day, AttendanceRecord,

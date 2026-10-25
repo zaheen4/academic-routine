@@ -45,6 +45,18 @@ pub fn run_ucam_scraper(output_path: &Path) -> Result<PathBuf, ScraperError> {
 /// # Errors
 /// Returns [`ScraperError`] if Python is missing, extraction fails, or output is absent.
 pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf, ScraperError> {
+    run_ucam_scraper_opts_force(output_path, headed, false)
+}
+
+/// Runs the standalone UCAM multi-account scraper with explicit visibility and force overwrite options.
+///
+/// # Errors
+/// Returns [`ScraperError`] if Python is missing, extraction fails, or output is absent.
+pub fn run_ucam_scraper_opts_force(
+    output_path: &Path,
+    headed: bool,
+    force: bool,
+) -> Result<PathBuf, ScraperError> {
     // 1. Resolve Python executable
     let python_candidates = [
         PathBuf::from(".venv/bin/python"),
@@ -91,14 +103,24 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
 
     let mut cmd = if !headed && has_xvfb {
         let mut c = Command::new("xvfb-run");
-        c.args([
-            "--auto-servernum",
-            "--server-args=-screen 0 1920x1080x24",
-            python_bin.to_str().unwrap_or("python3"),
-            script_path.to_str().unwrap_or("scraper/extract_ucam.py"),
-            "--output",
-            output_path.to_str().unwrap_or("output/routine_data.json"),
-        ]);
+        let mut args = vec![
+            "--auto-servernum".to_string(),
+            "--server-args=-screen 0 1920x1080x24".to_string(),
+            python_bin.to_str().unwrap_or("python3").to_string(),
+            script_path
+                .to_str()
+                .unwrap_or("scraper/extract_ucam.py")
+                .to_string(),
+            "--output".to_string(),
+            output_path
+                .to_str()
+                .unwrap_or("output/routine_data.json")
+                .to_string(),
+        ];
+        if force {
+            args.push("--force".to_string());
+        }
+        c.args(&args);
         c
     } else {
         let mut c = Command::new(&python_bin);
@@ -109,6 +131,9 @@ pub fn run_ucam_scraper_opts(output_path: &Path, headed: bool) -> Result<PathBuf
         ]);
         if headed {
             c.arg("--headed");
+        }
+        if force {
+            c.arg("--force");
         }
         c
     };
