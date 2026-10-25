@@ -4,12 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/academic-routine
-ExecStart=/home/ubuntu/academic-routine/target/release/academic-routine bot
+WorkingDirectory=%h/academic-routine
+Environment="PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=-%h/academic-routine/.env
+ExecStart=%h/.cargo/bin/academic-routine bot
 Restart=always
 RestartSec=5
-EnvironmentFile=/home/ubuntu/academic-routine/.env
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

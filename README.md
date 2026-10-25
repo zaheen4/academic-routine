@@ -188,8 +188,8 @@ academic-routine bot
 
 ### Prerequisites
 - [Rust](https://www.rust-lang.org/tools/install) (2021 edition)
-- [Python 3.10+](https://www.python.org/) with `uv` or `pip`
-- Playwright browsers: `uv run playwright install chromium`
+- [Python 3.10+](https://www.python.org/) with `uv` (`uv sync`)
+- System Chromium or Google Chrome with `xvfb-run` (for offscreen headless scraping on Linux)
 
 ### Environment Configuration
 Copy `.env.example` to `.env` and configure credentials:
@@ -200,25 +200,30 @@ cp .env.example .env
 
 | Variable | Description |
 | :--- | :--- |
-| `TELOXIDE_TOKEN` | Telegram Bot API token from @BotFather |
-| `TELEGRAM_CHAT_ID` | Default chat ID for administrative alerts |
-| `GIST_ID` | GitHub Gist ID for routine and calendar distribution |
-| `GIST_TOKEN` | GitHub Personal Access Token (PAT) with `gist` scope |
-| `UCAM_USERNAME` | University student portal ID / username |
-| `UCAM_PASSWORD` | University student portal password |
-| `PORT` | Health check server port (defaults to 8080) |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token from @BotFather (`TELOXIDE_TOKEN` also supported) |
+| `ADMIN_CHAT_ID` | Numeric Telegram user ID of owner for admin gate & notifications (`TELEGRAM_CHAT_ID` fallback) |
+| `DEFAULT_SECTION` | Default section filter (e.g. `B2`, `B1`, or `All`) |
+| `GITHUB_TOKEN` | GitHub Personal Access Token with `gist` scope (`GH_TOKEN` also supported) |
+| `GIST_ID` | GitHub Gist ID for public routine and calendar feed distribution |
+| `PORT` | Health check server port (defaults to 8000; set `PORT=0` or `DISABLE_HTTP_HEALTHCHECK=1` to disable) |
+
+> [!NOTE]
+> Routine state (`routine_state.json`) is kept strictly local and never published. Only `routine.ics`, `routine_data.json`, and sanitized `routine_meta.json` are synced to GitHub Gist for calendar subscriptions.
 
 ### Verification
-Execute the test suite (all 53 tests):
+Execute the test suite:
 
 ```bash
 cargo test --all-targets
+uv run pytest -q
 ```
 
 Check code formatting and lints:
 
 ```bash
+cargo fmt --check
 cargo clippy --all-targets
+uv run ruff check scraper
 ```
 
 ---
@@ -238,27 +243,31 @@ docker build -t academic-routine .
 # Run container with environment file
 docker run -d \
   --name routine-bot \
-  -p 8080:8080 \
+  -p 8000:8000 \
   --env-file .env \
   academic-routine
 ```
 
-### Option 2: Linux Systemd Daemon & Timer
+### Option 2: Linux Systemd User Daemon & Timer
 
-Pre-configured service and timer units are provided in `deployment/`:
+Pre-configured user-level service and timer units are provided in `deployment/`:
 
-- `academic-routine.service`: Runs the Telegram bot and 6:00 AM alert daemon with auto-restart on failure.
+- `academic-routine.service`: Runs the Telegram bot daemon and 6:00 AM briefing scheduler with automatic restart.
 - `academic-routine-sync.timer`: Automatically executes weekly routine scraping every Saturday at 8:00 PM.
 
 ```bash
-# Copy systemd units to system folder
-sudo cp deployment/academic-routine*.service /etc/systemd/system/
-sudo cp deployment/academic-routine-sync.timer /etc/systemd/system/
+# Copy systemd units to user services directory
+mkdir -p ~/.config/systemd/user
+cp deployment/academic-routine*.service ~/.config/systemd/user/
+cp deployment/academic-routine-sync.timer ~/.config/systemd/user/
 
-# Reload systemd and enable services
-sudo systemctl daemon-reload
-sudo systemctl enable --now academic-routine.service
-sudo systemctl enable --now academic-routine-sync.timer
+# Reload user daemon and enable services
+systemctl --user daemon-reload
+systemctl --user enable --now academic-routine.service
+systemctl --user enable --now academic-routine-sync.timer
+
+# Enable linger so user services run persistently across reboots
+loginctl enable-linger "$USER"
 ```
 
 ### Option 3: Cloud PaaS (Render, Railway, Fly.io)
