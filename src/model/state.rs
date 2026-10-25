@@ -816,8 +816,8 @@ impl RoutineState {
 
     /// Persists state as formatted JSON atomically.
     ///
-    /// Writes a mode-0600 temp file, fsyncs it, moves the previous version to
-    /// `.bak`, then renames the temp file into place.
+    /// Writes a mode-0600 temp file, fsyncs it, atomically links/copies the
+    /// previous version to `.bak`, then renames the temp file into place.
     ///
     /// # Errors
     /// Returns [`StateError`] if writing, syncing, or renaming fails.
@@ -864,8 +864,17 @@ impl RoutineState {
         }
 
         if path.exists() {
-            // Best-effort backup; tolerate ENOENT if removed concurrently.
-            let _ = fs::copy(path, &backup);
+            // Atomic backup: hard-link then rename; fall back to copy if hard links unsupported.
+            let bak_tmp = parent.join(format!(
+                ".{file_name}.bak-tmp-{}-{nonce}",
+                std::process::id()
+            ));
+            let _ = fs::remove_file(&bak_tmp);
+            if fs::hard_link(path, &bak_tmp).is_ok() {
+                let _ = fs::rename(&bak_tmp, &backup);
+            } else {
+                let _ = fs::copy(path, &backup);
+            }
         }
 
         if let Err(error) = fs::rename(&tmp_path, path) {
@@ -1030,9 +1039,24 @@ impl StateStore {
     /// Returns [`StateError`] if the file is unreadable, has a newer schema, or
     /// cannot be quarantined.
     pub fn open(path: PathBuf) -> Result<(Self, Option<String>), StateError> {
-        let existed = path.exists();
+        let pending_migration = if path.exists() {
+            #[derive(serde::Deserialize)]
+            struct VersionProbe {
+                #[serde(default = "default_schema_version")]
+                schema_version: u32,
+            }
+            fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<VersionProbe>(&c).ok())
+                .map(|v| v.schema_version < STATE_SCHEMA_VERSION)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
         let (mut state, note) = RoutineState::open_or_recover(&path)?;
         let cleaned = state.clean_expired_vacation();
+        let recovered_from_backup = note.is_some();
         let initial_stamp = FileStamp::from_path(&path);
         let store = Self {
             path,
@@ -1042,24 +1066,15 @@ impl StateStore {
             })),
             recovery_note: Arc::new(Mutex::new(note.clone())),
         };
-        if existed || cleaned {
-            // Persist the migration/vacation cleanup so the next process sees it.
-            if let Err(error) = store.save_current() {
+
+        if cleaned || pending_migration || recovered_from_backup {
+            // Persist the migration, recovery, or vacation cleanup so subsequent processes see it.
+            if let Err(error) = store.update(|_| ()) {
                 eprintln!("⚠️ Could not persist migrated state: {error}");
             }
-            // Set the fingerprint from the file AFTER that save
-            if let Ok(mut guard) = store.inner.lock() {
-                guard.stamp = FileStamp::from_path(&store.path);
-            }
         }
-        Ok((store, note))
-    }
 
-    fn save_current(&self) -> Result<(), StateError> {
-        let mut guard = self.lock();
-        guard.state.save(&self.path)?;
-        guard.stamp = FileStamp::from_path(&self.path);
-        Ok(())
+        Ok((store, note))
     }
 
     /// Returns a snapshot of the current state.
@@ -1714,5 +1729,65 @@ mod tests {
         let (reopened, _) = StateStore::open(path).unwrap();
         assert_eq!(reopened.read().owner_username.as_deref(), Some("@legacy"));
         assert_eq!(reopened.read().telegram_username, None);
+    }
+
+    #[test]
+    fn test_open_does_not_rewrite_unchanged_state() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store, _) = StateStore::open(path.clone()).unwrap();
+        store
+            .update(|s| s.semester_name = "Steady".to_string())
+            .unwrap();
+
+        let mtime_before = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let (store2, _) = StateStore::open(path.clone()).unwrap();
+        let mtime_after = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(mtime_before, mtime_after);
+        assert_eq!(store2.read().semester_name, "Steady");
+    }
+
+    #[test]
+    fn test_open_persists_legacy_schema_migration() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let v1_json = r#"{
+            "schema_version": 1,
+            "semester_name": "Summer 2026",
+            "owner_username": null,
+            "telegram_username": "@legacy"
+        }"#;
+        fs::write(&path, v1_json).unwrap();
+
+        let (store, _) = StateStore::open(path.clone()).unwrap();
+        assert_eq!(store.read().schema_version, STATE_SCHEMA_VERSION);
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains(r#""schema_version": 2"#));
+        assert!(content.contains(r#""owner_username": "@legacy""#));
+    }
+
+    #[test]
+    fn test_backup_complete_and_readable_after_two_saves() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store, _) = StateStore::open(path.clone()).unwrap();
+
+        store
+            .update(|s| s.semester_name = "Version1".to_string())
+            .unwrap();
+        store
+            .update(|s| s.semester_name = "Version2".to_string())
+            .unwrap();
+
+        let backup = backup_path(&path);
+        assert!(backup.exists());
+        let backup_state = RoutineState::load(&backup).unwrap().unwrap();
+        assert_eq!(backup_state.semester_name, "Version1");
+
+        let current_state = RoutineState::load(&path).unwrap().unwrap();
+        assert_eq!(current_state.semester_name, "Version2");
     }
 }
