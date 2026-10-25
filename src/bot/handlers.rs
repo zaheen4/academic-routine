@@ -184,7 +184,7 @@ impl BotContext {
 
 /// Returns `Ok(())` when the code is acceptable, `Err(valid_codes)` when it should be refused,
 /// and never blocks recording when the routine itself cannot be read.
-pub fn check_attendance_code(routine_path: &Path, code: &str) -> Result<(), String> {
+pub(crate) fn check_attendance_code(routine_path: &Path, code: &str) -> Result<(), String> {
     match load_routine_file(routine_path) {
         Ok(raw) if raw.entries.iter().any(|e| codes_match(&e.code, code)) => Ok(()),
         Ok(raw) => {
@@ -196,7 +196,7 @@ pub fn check_attendance_code(routine_path: &Path, code: &str) -> Result<(), Stri
             Err(valid_codes)
         }
         Err(error) => {
-            eprintln!("⚠️ Attendance recorded without routine validation: {error}");
+            eprintln!("⚠️ Validating attendance code without routine: {error}");
             Ok(())
         }
     }

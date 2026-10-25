@@ -127,6 +127,14 @@ async fn main() {
             return;
         }
         Some(Commands::Complete { code }) | Some(Commands::Drop { code }) => {
+            if store.with_state(|s| s.is_dropped(code)) {
+                println!(
+                    "{} Course {} is already marked as completed.",
+                    "ℹ️".cyan(),
+                    code.to_uppercase().bold()
+                );
+                return;
+            }
             match store.update(|s| (s.complete_course(code), s.dropped_courses.clone())) {
                 Ok((true, dropped)) => {
                     println!(
@@ -150,6 +158,14 @@ async fn main() {
             return;
         }
         Some(Commands::Resume { code }) | Some(Commands::Restore { code }) => {
+            if store.with_state(|s| !s.is_dropped(code)) {
+                println!(
+                    "{} Course {} was not in the completed list.",
+                    "ℹ️".yellow(),
+                    code.to_uppercase().bold()
+                );
+                return;
+            }
             match store.update(|s| s.resume_course(code)) {
                 Ok(true) => {
                     println!(

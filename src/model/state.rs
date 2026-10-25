@@ -1613,6 +1613,45 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_state_path(&temp_dir);
         let (store_a, _) = StateStore::open(path.clone()).unwrap();
+        let store_b = store_a.clone();
+
+        let handle_a = std::thread::spawn(move || {
+            for _ in 0..50 {
+                store_a
+                    .update(|s| s.record_attendance(1, "CSE-4101", true))
+                    .unwrap();
+            }
+        });
+
+        let handle_b = std::thread::spawn(move || {
+            for _ in 0..50 {
+                store_b
+                    .update(|s| s.record_attendance(2, "CSE-4102", true))
+                    .unwrap();
+            }
+        });
+
+        handle_a.join().unwrap();
+        handle_b.join().unwrap();
+
+        let loaded = RoutineState::load(&path)
+            .unwrap()
+            .expect("file should exist");
+        assert_eq!(
+            loaded.get_attendance(1, "CSE-4101").map(|r| r.attended),
+            Some(50)
+        );
+        assert_eq!(
+            loaded.get_attendance(2, "CSE-4102").map(|r| r.attended),
+            Some(50)
+        );
+    }
+
+    #[test]
+    fn test_independent_writers_never_corrupt_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store_a, _) = StateStore::open(path.clone()).unwrap();
         let (store_b, _) = StateStore::open(path.clone()).unwrap();
 
         let handle_a = std::thread::spawn(move || {
