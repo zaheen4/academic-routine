@@ -41,7 +41,7 @@ pub fn generate_ics(schedule: &Schedule, semester_end_date: Option<NaiveDate>) -
     push_prop(&mut ics, "PRODID", "-//Academic Routine Assistant//EN");
     push_prop(&mut ics, "CALSCALE", "GREGORIAN");
     push_prop(&mut ics, "METHOD", "PUBLISH");
-    push_prop(&mut ics, "X-WR-CALNAME", &schedule.semester_name);
+    push_text_prop(&mut ics, "X-WR-CALNAME", &schedule.semester_name);
     push_prop(&mut ics, "X-WR-TIMEZONE", TZID);
 
     // Bangladesh observes UTC+6 year-round, so one STANDARD observance is correct.
@@ -166,7 +166,7 @@ fn fold_ical_line(line: &str) -> String {
         let width = ch.len_utf8();
         if octets + width > MAX_LINE_OCTETS {
             out.push_str(&current);
-            out.push_str("\r\n ");
+            out.push_str("\r\n"); // continuation WSP is the seeded ' ' below
             current.clear();
             current.push(' ');
             octets = 1;
@@ -351,6 +351,88 @@ mod tests {
         assert_eq!(escape_ics("a;b,c\\d"), "a\\;b\\,c\\\\d");
         assert_eq!(escape_ics("line1\r\nline2"), "line1\\nline2");
         assert_eq!(escape_ics("bell\u{0007}tab\t"), "belltab\t");
+    }
+
+    fn unfold_ics(folded: &str) -> String {
+        let trimmed = folded.strip_suffix("\r\n").unwrap_or(folded);
+        trimmed.replace("\r\n ", "")
+    }
+
+    #[test]
+    fn test_fold_then_unfold_roundtrips() {
+        for len in 1..=300 {
+            let original = format!("DESCRIPTION:{}", "a".repeat(len));
+            let folded = fold_ical_line(&original);
+            let unfolded = unfold_ics(&folded);
+            assert_eq!(unfolded, original, "Failed roundtrip for length {len}");
+        }
+
+        let sample = "DESCRIPTION:পরীক্ষা 🎓 Advanced Topics In Distributed Systems & Machine Learning 🚀 — কক্ষ ২০৪";
+        let folded = fold_ical_line(sample);
+        let unfolded = unfold_ics(&folded);
+        assert_eq!(unfolded, sample);
+    }
+
+    #[test]
+    fn test_no_physical_line_exceeds_75_octets() {
+        for len in 1..=300 {
+            let line = format!("DESCRIPTION:{}", "x".repeat(len));
+            let folded = fold_ical_line(&line);
+            for physical_line in folded.split("\r\n") {
+                assert!(
+                    physical_line.len() <= 75,
+                    "physical line length {} exceeds 75 octets: {physical_line}",
+                    physical_line.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_continuation_lines_start_with_exactly_one_space() {
+        let line = format!("DESCRIPTION:{}", "y".repeat(250));
+        let folded = fold_ical_line(&line);
+        let mut lines = folded.split("\r\n").filter(|l| !l.is_empty());
+        let _first = lines.next().unwrap();
+        for cont in lines {
+            assert!(
+                cont.starts_with(' '),
+                "continuation line must start with space: {cont}"
+            );
+            assert!(
+                !cont.starts_with("  "),
+                "continuation line must not start with double space: {cont}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_end_to_end_generate_ics_has_no_double_space_continuations() {
+        let teacher = TeacherContact::new(
+            "Professor Long Name With Very Long Email Address For Testing",
+            Some("+8801700000000".into()),
+            Some("verylongmailbox@example-university.edu.bd".into()),
+        );
+        let slot = TimeSlot::from_str("09:15 - 10:30").unwrap();
+        let entry = CourseEntry::new(
+            "CSE-4101",
+            "Advanced Artificial Intelligence And Large-Scale Machine Learning Architecture",
+            "B2",
+            DayOfWeek::Mon,
+            slot,
+            "Room 120 / Software Lab 4",
+            teacher,
+        );
+        let sched = Schedule::new("CSE Spring 2026", None, vec![entry]);
+        let ics = generate_ics(&sched, NaiveDate::from_ymd_opt(2026, 11, 30));
+
+        assert!(
+            !ics.contains("\r\n  "),
+            "ICS must not contain double-space continuation lines"
+        );
+        for line in ics.split("\r\n") {
+            assert!(line.len() <= 75, "line exceeded 75 octets: {line}");
+        }
     }
 
     #[test]
