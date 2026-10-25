@@ -27,8 +27,8 @@ pub use exporters::{
     sync_gist_file,
 };
 pub use model::{
-    academic_now, codes_match, current_academic_day, next_academic_day, AttendanceRecord,
-    AttendanceStatus, ChangeType, CourseEntry, DayOfWeek, ParseDayError, RoutineState, Schedule,
-    ScheduleConflict, ScheduleDiff, ScheduleDiffItem, StateError, StateStore, TeacherContact,
-    TimeSlot, TimeSlotError,
+    academic_now, codes_match, current_academic_day, next_academic_day, next_daily_time,
+    AttendanceRecord, AttendanceStatus, ChangeType, CourseEntry, DayOfWeek, ParseDayError,
+    RoutineState, Schedule, ScheduleConflict, ScheduleDiff, ScheduleDiffItem, StateError,
+    StateStore, TeacherContact, TimeSlot, TimeSlotError,
 };

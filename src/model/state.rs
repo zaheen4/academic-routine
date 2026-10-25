@@ -1,9 +1,17 @@
 //! Persistent state management for course dropping, attendance, and semester lifecycles.
 //!
-//! State is private to the host. It is never uploaded to the public Gist bundle.
-//! Writes are atomic (tmp file + fsync + rename) and the previous version is kept
-//! as a `.bak` file so a corrupt state file can be recovered instead of silently
-//! resetting every user's data.
+//! # Architecture & Concurrency Notes
+//! - State is strictly private to the local host and must not be shared between machines.
+//!   It is never uploaded to the public Gist bundle.
+//! - Writes are atomic: data is written to a unique temp file (`.routine_state.json.tmp-<pid>-<nonce>`),
+//!   fsynced, the existing file copied to `.bak` (best-effort), and atomically renamed into place.
+//! - State updates use a reload-before-write pattern ([`StateStore`]) to tolerate concurrent processes
+//!   (e.g. background scraper sync unit and long-running Telegram bot daemon running concurrently).
+//!   A millisecond-scale race remains between two truly simultaneous writers; external writes are
+//!   detected via mtime/length stamping before applying mutations.
+//! - Schema evolution: binaries older than the on-disk schema version (`schema_version > STATE_SCHEMA_VERSION`)
+//!   refuse to open the state file with [`StateError::UnsupportedVersion`] rather than quarantining or
+//!   overwriting it. Corrupt or unparseable files with supported schemas are quarantined to `.corrupt-<timestamp>`.
 
 use crate::model::day::academic_now;
 use chrono::{NaiveDate, Utc};

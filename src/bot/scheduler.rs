@@ -2,7 +2,7 @@
 
 use crate::bot::handlers::{escape_html, BotContext};
 use crate::model::day::{academic_now, current_academic_day};
-use chrono::NaiveTime;
+use crate::model::next_daily_time;
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
@@ -143,17 +143,8 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
 
 fn duration_until_next_6am() -> std::time::Duration {
     let now = academic_now();
-    let target_time = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
-
-    let target_dt = if now.time() < target_time {
-        now.date_naive().and_time(target_time)
-    } else {
-        (now.date_naive() + chrono::Duration::days(1)).and_time(target_time)
-    };
-
-    let now_naive = now.naive_local();
-    let diff_seconds = (target_dt - now_naive).num_seconds().max(1) as u64;
-
+    let target = next_daily_time(6, 0);
+    let diff_seconds = (target - now).num_seconds().max(1) as u64;
     std::time::Duration::from_secs(diff_seconds)
 }
 

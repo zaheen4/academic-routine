@@ -12,6 +12,7 @@ pub use day::{academic_now, current_academic_day, next_academic_day, DayOfWeek, 
 pub use diff::{ChangeType, ScheduleDiff, ScheduleDiffItem};
 pub use schedule::{Schedule, ScheduleConflict};
 pub use state::{
-    codes_match, AttendanceRecord, AttendanceStatus, RoutineState, StateError, StateStore,
+    codes_match, next_daily_time, AttendanceRecord, AttendanceStatus, RoutineState, StateError,
+    StateStore,
 };
 pub use time_slot::{TimeSlot, TimeSlotError};

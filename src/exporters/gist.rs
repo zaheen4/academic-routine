@@ -371,21 +371,32 @@ pub async fn fetch_gist_meta_data(gist_id: &str) -> Result<Option<PublicRoutineM
         request = request.header("Authorization", format!("Bearer {}", token.trim()));
     }
 
-    if let Ok(response) = request.send().await {
-        if response.status().is_success() {
-            if let Ok(data) = response.json::<serde_json::Value>().await {
-                if let Some(content) = data
-                    .get("files")
-                    .and_then(|files| files.get(ROUTINE_META_FILENAME))
-                    .and_then(|file| file.get("content"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    return serde_json::from_str(content)
-                        .map(Some)
-                        .map_err(|e| format!("Invalid {ROUTINE_META_FILENAME}: {e}"));
-                }
-            }
-        }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch Gist metadata: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub API request failed with HTTP status {}",
+            response.status()
+        ));
+    }
+
+    let data: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Gist JSON response: {e}"))?;
+
+    if let Some(content) = data
+        .get("files")
+        .and_then(|files| files.get(ROUTINE_META_FILENAME))
+        .and_then(|file| file.get("content"))
+        .and_then(serde_json::Value::as_str)
+    {
+        return serde_json::from_str(content)
+            .map(Some)
+            .map_err(|e| format!("Invalid {ROUTINE_META_FILENAME}: {e}"));
     }
 
     Ok(None)

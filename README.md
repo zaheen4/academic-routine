@@ -50,7 +50,7 @@ flowchart TD
 
     subgraph SyncLayer ["Cloud Synchronization and State Cache"]
         direction TB
-        GistBundle[("GitHub Gist Cloud Bundle: routine.ics, routine_data.json, routine_state.json")]:::cloud
+        GistBundle[("GitHub Gist Cloud Bundle: routine.ics, routine_data.json, routine_meta.json")]:::cloud
         LocalState[("Local Baseline Cache: routine_data.prev.json, routine_state.json")]:::cloud
     end
 
@@ -80,7 +80,6 @@ flowchart TD
     SectionFilter --> ICalGenerator
     ICalGenerator --> GistBundle
     Parser --> GistBundle
-    LocalState --> GistBundle
 
     GistBundle -->|webcal Protocol| AppleCal
     GistBundle -->|Web Import CID| GoogleCal
@@ -208,7 +207,11 @@ cp .env.example .env
 | `PORT` | Health check server port (defaults to 8000; set `PORT=0` or `DISABLE_HTTP_HEALTHCHECK=1` to disable) |
 
 > [!NOTE]
-> Routine state (`routine_state.json`) is kept strictly local and never published. Only `routine.ics`, `routine_data.json`, and sanitized `routine_meta.json` are synced to GitHub Gist for calendar subscriptions.
+> **State Architecture & Local Isolation**:
+> - Routine state (`routine_state.json`) is strictly local to a single host and must never be shared between different machines. Cloud syncing is strictly limited to public calendar assets (`routine.ics`, `routine_data.json`, `routine_meta.json`).
+> - **Concurrent Access**: The background scraper service (`academic-routine-sync.service`) and the long-running bot daemon (`academic-routine.service`) may run simultaneously on the host. Mutations use a reload-before-write pattern via `StateStore` to avoid clobbering concurrent state changes.
+> - **Schema Protection**: Binaries older than the on-disk state schema version refuse to start rather than corrupting or resetting the file.
+> - **Admin Precedence**: Both the CLI and the daemon prioritize `ADMIN_CHAT_ID` over the fallback `TELEGRAM_CHAT_ID`.
 
 ### Verification
 Execute the test suite:

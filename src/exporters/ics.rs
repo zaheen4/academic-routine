@@ -133,12 +133,16 @@ pub fn export_ics_file(
     output_path: &Path,
     semester_end_date: Option<NaiveDate>,
 ) -> io::Result<()> {
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let ics_content = generate_ics(schedule, semester_end_date);
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    // Write to a sibling temp file and rename so a crash cannot truncate a good feed.
-    let tmp = output_path.with_extension("ics.tmp");
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let file_name = output_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("routine.ics");
+    let nonce = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
     fs::write(&tmp, ics_content)?;
     fs::rename(&tmp, output_path)
 }
