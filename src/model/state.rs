@@ -4,11 +4,15 @@
 //! - State is strictly private to the local host and must not be shared between machines.
 //!   It is never uploaded to the public Gist bundle.
 //! - Writes are atomic: data is written to a unique temp file (`.routine_state.json.tmp-<pid>-<nonce>`),
-//!   fsynced, the existing file copied to `.bak` (best-effort), and atomically renamed into place.
+//!   fsynced, the existing file hard-linked (or copied, if the filesystem has no hard links) to `.bak`,
+//!   and the temp file atomically renamed into place.
 //! - State updates use a reload-before-write pattern ([`StateStore`]) to tolerate concurrent processes
-//!   (e.g. background scraper sync unit and long-running Telegram bot daemon running concurrently).
-//!   A millisecond-scale race remains between two truly simultaneous writers; external writes are
-//!   detected via mtime/length stamping before applying mutations.
+//!   (e.g. background scraper sync unit and long-running Telegram bot daemon running concurrently);
+//!   external writes are detected via mtime/length stamping before applying mutations.
+//!   No cross-process lock is taken: each update is a read-modify-write lasting a few milliseconds,
+//!   so two processes whose writes overlap discard one another's mutation (last writer wins). For the
+//!   expected deployment (occasional bot message plus a weekly sync unit) collisions are rare, but a
+//!   sustained interleaving can lose most of one writer's updates.
 //! - Schema evolution: binaries older than the on-disk schema version (`schema_version > STATE_SCHEMA_VERSION`)
 //!   refuse to open the state file with [`StateError::UnsupportedVersion`] rather than quarantining or
 //!   overwriting it. Corrupt or unparseable files with supported schemas are quarantined to `.corrupt-<timestamp>`.
@@ -977,8 +981,13 @@ impl FileStamp {
 
 #[derive(Debug, PartialEq, Eq)]
 enum RefreshOutcome {
+    /// The on-disk file matched the stamp; the in-memory state is current.
     Unchanged,
+    /// The in-memory state was replaced from disk, or the file was removed and the stamp cleared.
     Reloaded,
+    /// The on-disk file could not be read; the in-memory state is kept and will be written on save.
+    Stale,
+    /// The on-disk file uses a newer schema; mutations must be refused.
     Blocked(StateError),
 }
 
@@ -1012,7 +1021,7 @@ impl StoreInner {
             }
             Err(e) => {
                 eprintln!("⚠️ state refresh skipped: {e}");
-                RefreshOutcome::Reloaded
+                RefreshOutcome::Stale
             }
         }
     }
@@ -1647,8 +1656,38 @@ mod tests {
         );
     }
 
+    /// Two independent stores open the same path sequentially: the second must reload the file the
+    /// first wrote, or its update silently discards the first one.
     #[test]
-    fn test_independent_writers_never_corrupt_file() {
+    fn test_second_store_sees_first_store_write() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store_a, _) = StateStore::open(path.clone()).unwrap();
+        let (store_b, _) = StateStore::open(path.clone()).unwrap();
+
+        store_a
+            .update(|s| s.record_attendance(1, "CSE-4101", true))
+            .unwrap();
+        store_b
+            .update(|s| s.record_attendance(2, "CSE-4102", true))
+            .unwrap();
+
+        let loaded = RoutineState::load(&path).unwrap().expect("file exists");
+        assert_eq!(
+            loaded.get_attendance(1, "CSE-4101").map(|r| r.attended),
+            Some(1),
+            "second store discarded the first store's update"
+        );
+        assert_eq!(
+            loaded.get_attendance(2, "CSE-4102").map(|r| r.attended),
+            Some(1)
+        );
+    }
+
+    /// Without a cross-process lock, concurrent read-modify-write cycles can lose updates. The only
+    /// guarantee this can assert is that the final file is still valid JSON (no torn writes).
+    #[test]
+    fn test_independent_writers_leave_parseable_file() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_state_path(&temp_dir);
         let (store_a, _) = StateStore::open(path.clone()).unwrap();
@@ -1780,11 +1819,25 @@ mod tests {
             .unwrap();
 
         let mtime_before = fs::metadata(&path).unwrap().modified().unwrap();
+        #[cfg(unix)]
+        let inode_before = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&path).unwrap().ino()
+        };
         std::thread::sleep(std::time::Duration::from_millis(20));
 
         let (store2, _) = StateStore::open(path.clone()).unwrap();
         let mtime_after = fs::metadata(&path).unwrap().modified().unwrap();
         assert_eq!(mtime_before, mtime_after);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                inode_before,
+                fs::metadata(&path).unwrap().ino(),
+                "open() rewrote the state file"
+            );
+        }
         assert_eq!(store2.read().semester_name, "Steady");
     }
 
