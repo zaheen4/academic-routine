@@ -1,6 +1,8 @@
 //! Tests for CLI path resolution and admin env precedence.
 
-use academic_routine::{resolve_routine_path, resolve_write_target, BotContext};
+use academic_routine::{
+    resolve_admin_chat_id, resolve_routine_path, resolve_write_target, BotContext,
+};
 use std::path::PathBuf;
 
 #[test]
@@ -61,4 +63,17 @@ fn admin_chat_id_precedence_in_bot_context() {
 
     // Cleanup env
     std::env::remove_var("ADMIN_CHAT_ID");
+}
+
+#[test]
+fn admin_chat_id_precedence_in_cli_resolver() {
+    std::env::set_var("ADMIN_CHAT_ID", "123456789");
+    std::env::set_var("TELEGRAM_CHAT_ID", "987654321");
+    assert_eq!(resolve_admin_chat_id(), Some(123456789));
+
+    std::env::remove_var("ADMIN_CHAT_ID");
+    assert_eq!(resolve_admin_chat_id(), Some(987654321));
+
+    std::env::remove_var("TELEGRAM_CHAT_ID");
+    assert_eq!(resolve_admin_chat_id(), None);
 }

@@ -130,10 +130,7 @@ impl BotContext {
             eprintln!("⚠️ StateStore notice: {n}");
         }
 
-        let admin_chat_id = std::env::var("ADMIN_CHAT_ID")
-            .or_else(|_| std::env::var("TELEGRAM_CHAT_ID"))
-            .ok()
-            .and_then(|s| s.trim().parse::<i64>().ok());
+        let admin_chat_id = crate::cli::resolve_admin_chat_id();
 
         Ok(Self {
             routine_path,

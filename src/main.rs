@@ -1,8 +1,8 @@
 use academic_routine::cli::{Cli, Commands};
 use academic_routine::{
     academic_now, current_academic_day, export_ics_file, load_routine_file, render_day_table,
-    render_teacher_card, render_today_card, render_weekly_overview, resolve_routine_path,
-    resolve_write_target, DayOfWeek, StateStore,
+    render_teacher_card, render_today_card, render_weekly_overview, resolve_admin_chat_id,
+    resolve_routine_path, resolve_write_target, DayOfWeek, StateStore,
 };
 use chrono::Timelike;
 use clap::Parser;
@@ -265,8 +265,10 @@ async fn main() {
                 );
             }
 
-            let chat_id_str =
-                std::env::var("TELEGRAM_CHAT_ID").unwrap_or_else(|_| "Not configured".to_string());
+            let chat_id_str = match resolve_admin_chat_id() {
+                Some(id) => id.to_string(),
+                None => "Not configured".to_string(),
+            };
             let env_username = std::env::var("TELEGRAM_USERNAME").ok();
             let resolved_user = state.owner_username.as_ref().or(env_username.as_ref());
             let user_info = resolved_user
@@ -664,11 +666,7 @@ async fn main() {
                             .unwrap_or_else(|| std::path::Path::new(""))
                             .join("attendance_data.json");
                         if att_path.exists() {
-                            let admin_chat_id = std::env::var("ADMIN_CHAT_ID")
-                                .or_else(|_| std::env::var("TELEGRAM_CHAT_ID"))
-                                .ok()
-                                .and_then(|s| s.trim().parse::<i64>().ok())
-                                .unwrap_or(0);
+                            let admin_chat_id = resolve_admin_chat_id().unwrap_or(0);
                             if admin_chat_id > 0 {
                                 match store.update(|s| {
                                     s.import_ucam_attendance_file(admin_chat_id, &att_path)

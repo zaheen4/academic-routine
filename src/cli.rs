@@ -196,6 +196,17 @@ pub enum Commands {
     },
 }
 
+/// Resolves the administrator's Telegram Chat ID from the environment.
+///
+/// Prioritizes `ADMIN_CHAT_ID`, falling back to `TELEGRAM_CHAT_ID`.
+#[must_use]
+pub fn resolve_admin_chat_id() -> Option<i64> {
+    std::env::var("ADMIN_CHAT_ID")
+        .or_else(|_| std::env::var("TELEGRAM_CHAT_ID"))
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+}
+
 /// Resolves a write target path, defaulting to `output/routine_data.json` if not specified.
 /// Does not require the path to exist on disk.
 #[must_use]

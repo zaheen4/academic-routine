@@ -16,7 +16,7 @@ pub mod exporters;
 pub mod model;
 
 pub use bot::{check_attendance_code, run_bot_daemon, BotContext, Command};
-pub use cli::{resolve_routine_path, resolve_write_target, Cli, Commands};
+pub use cli::{resolve_admin_chat_id, resolve_routine_path, resolve_write_target, Cli, Commands};
 pub use engine::{
     load_routine_file, parse_routine_json, run_gsheet_sync, run_ucam_scraper,
     run_ucam_scraper_opts, run_ucam_scraper_opts_force, IngestError, ScraperError,
