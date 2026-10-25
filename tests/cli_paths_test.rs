@@ -109,6 +109,13 @@ fn admin_chat_id_precedence_in_cli_resolver() {
     std::env::remove_var("ADMIN_CHAT_ID");
     assert_eq!(resolve_admin_chat_id(), Some(987654321));
 
+    // A malformed ADMIN_CHAT_ID must not hide a valid TELEGRAM_CHAT_ID.
+    std::env::set_var("ADMIN_CHAT_ID", "not-a-chat-id");
+    assert_eq!(resolve_admin_chat_id(), Some(987654321));
+
+    std::env::set_var("ADMIN_CHAT_ID", "   ");
+    assert_eq!(resolve_admin_chat_id(), Some(987654321));
+
     std::env::remove_var("TELEGRAM_CHAT_ID");
     assert_eq!(resolve_admin_chat_id(), None);
 }

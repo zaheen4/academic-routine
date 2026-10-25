@@ -130,7 +130,7 @@ impl BotContext {
             eprintln!("⚠️ StateStore notice: {n}");
         }
 
-        let admin_chat_id = crate::cli::resolve_admin_chat_id();
+        let admin_chat_id = crate::config::resolve_admin_chat_id();
 
         Ok(Self {
             routine_path,
