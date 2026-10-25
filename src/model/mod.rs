@@ -11,5 +11,7 @@ pub use course::{CourseEntry, TeacherContact};
 pub use day::{academic_now, current_academic_day, next_academic_day, DayOfWeek, ParseDayError};
 pub use diff::{ChangeType, ScheduleDiff, ScheduleDiffItem};
 pub use schedule::{Schedule, ScheduleConflict};
-pub use state::{codes_match, AttendanceRecord, AttendanceStatus, RoutineState, StateError};
+pub use state::{
+    codes_match, AttendanceRecord, AttendanceStatus, RoutineState, StateError, StateStore,
+};
 pub use time_slot::{TimeSlot, TimeSlotError};

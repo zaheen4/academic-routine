@@ -1,7 +1,7 @@
 use academic_routine::cli::{Cli, Commands};
 use academic_routine::{
     academic_now, current_academic_day, export_ics_file, load_routine_file, render_day_table,
-    render_teacher_card, render_today_card, render_weekly_overview, DayOfWeek, RoutineState,
+    render_teacher_card, render_today_card, render_weekly_overview, DayOfWeek, StateStore,
 };
 use chrono::Timelike;
 use clap::Parser;
@@ -84,11 +84,13 @@ async fn main() {
     }
 
     let state_file = state_path();
-    let (mut state, recovery_note) =
-        RoutineState::open_or_recover(&state_file).unwrap_or_else(|e| {
-            eprintln!("⚠️ State error: {e}. Falling back to default state.");
-            (RoutineState::default(), None)
-        });
+    let (store, recovery_note) = match StateStore::open(state_file.clone()) {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("{} Failed to open state file: {e}", "❌".red());
+            std::process::exit(1);
+        }
+    };
     if let Some(note) = recovery_note {
         eprintln!("⚠️ StateStore notice: {note}");
     }
@@ -158,47 +160,52 @@ async fn main() {
             return;
         }
         Some(Commands::Complete { code }) | Some(Commands::Drop { code }) => {
-            if state.complete_course(code) {
-                if let Err(e) = state.save(&state_file) {
-                    eprintln!("{} Failed to save state: {e}", "❌".red());
-                } else {
+            match store.update(|s| (s.complete_course(code), s.dropped_courses.clone())) {
+                Ok((true, dropped)) => {
                     println!(
                         "{} Marked course {} as completed. Excluded from schedules and calendar exports.",
                         "🏁".green().bold(),
                         code.to_uppercase().bold()
                     );
-                    println!("   Active completed courses: {:?}", state.dropped_courses);
+                    println!("   Active completed courses: {:?}", dropped);
                 }
-            } else {
-                println!(
-                    "{} Course {} is already marked as completed.",
-                    "ℹ️".cyan(),
-                    code.to_uppercase().bold()
-                );
+                Ok((false, _)) => {
+                    println!(
+                        "{} Course {} is already marked as completed.",
+                        "ℹ️".cyan(),
+                        code.to_uppercase().bold()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{} Failed to save state: {e}", "❌".red());
+                }
             }
             return;
         }
         Some(Commands::Resume { code }) | Some(Commands::Restore { code }) => {
-            if state.resume_course(code) {
-                if let Err(e) = state.save(&state_file) {
-                    eprintln!("{} Failed to save state: {e}", "❌".red());
-                } else {
+            match store.update(|s| s.resume_course(code)) {
+                Ok(true) => {
                     println!(
                         "{} Resumed course {}. It will now appear in your schedule and calendar exports.",
                         "✅".green().bold(),
                         code.to_uppercase().bold()
                     );
                 }
-            } else {
-                println!(
-                    "{} Course {} was not in the completed list.",
-                    "ℹ️".yellow(),
-                    code.to_uppercase().bold()
-                );
+                Ok(false) => {
+                    println!(
+                        "{} Course {} was not in the completed list.",
+                        "ℹ️".yellow(),
+                        code.to_uppercase().bold()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{} Failed to save state: {e}", "❌".red());
+                }
             }
             return;
         }
         Some(Commands::Completed) | Some(Commands::Dropped) => {
+            let state = store.read();
             if state.dropped_courses.is_empty() {
                 println!(
                     "{} No courses are currently marked as completed.",
@@ -227,6 +234,7 @@ async fn main() {
             return;
         }
         Some(Commands::Status) => {
+            let state = store.read();
             println!("┌──────────────────────────────────────────────────────────────┐");
             println!("│             🎓 Academic Routine Subsystem Status             │");
             println!("├──────────────────────────────────────────────────────────────┤");
@@ -377,8 +385,10 @@ async fn main() {
                     } else {
                         None
                     };
-                    state.set_vacation(true, end_date);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_vacation(true, end_date)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     if let Some(d) = end_date {
                         println!("{} Vacation mode activated until {d}. Morning alerts and class reminders are paused.", "🏖️".yellow().bold());
                     } else {
@@ -386,14 +396,17 @@ async fn main() {
                     }
                 }
                 "off" | "disable" | "stop" | "resume" => {
-                    state.set_vacation(false, None);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_vacation(false, None)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} Vacation mode deactivated. Regular schedule notifications are active.",
                         "🎒".green().bold()
                     );
                 }
                 _ => {
+                    let state = store.read();
                     if state.is_vacation_active() {
                         if let Some(until) = state.vacation_until {
                             println!(
@@ -419,22 +432,27 @@ async fn main() {
             let act = action.as_deref().unwrap_or("status").to_lowercase();
             match act.as_str() {
                 "off" | "disable" | "pause" | "stop" => {
-                    state.set_morning_alerts(false);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_morning_alerts(false)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} 06:00 AM proactive morning briefings PAUSED.",
                         "🔕".yellow().bold()
                     );
                 }
                 "on" | "enable" | "resume" | "start" => {
-                    state.set_morning_alerts(true);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_morning_alerts(true)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} 06:00 AM proactive morning briefings RESUMED.",
                         "🔔".green().bold()
                     );
                 }
                 _ => {
+                    let state = store.read();
                     let user_info = state
                         .telegram_username
                         .as_deref()
@@ -460,30 +478,40 @@ async fn main() {
             let tgt = target.as_deref().unwrap_or("all").to_lowercase();
             match tgt.as_str() {
                 "alerts" => {
-                    state.set_morning_alerts(false);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_morning_alerts(false)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!("{} Morning alerts paused.", "🔕".yellow().bold());
                 }
                 "gist" => {
-                    state.set_sync_gist(false);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_sync_gist(false)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} Automatic GitHub Gist sync paused.",
                         "⏸️".yellow().bold()
                     );
                 }
                 "gsheet" => {
-                    state.set_sync_gsheet(false);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_sync_gsheet(false)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} Automatic Google Sheets sync paused.",
                         "⏸️".yellow().bold()
                     );
                 }
                 _ => {
-                    state.set_morning_alerts(false);
-                    state.set_vacation(true, None);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| {
+                        s.set_morning_alerts(false);
+                        s.set_vacation(true, None);
+                    }) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} All alerts and automated activities PAUSED (Vacation mode on).",
                         "⏸️".yellow().bold()
@@ -496,30 +524,40 @@ async fn main() {
             let tgt = target.as_deref().unwrap_or("all").to_lowercase();
             match tgt.as_str() {
                 "alerts" => {
-                    state.set_morning_alerts(true);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_morning_alerts(true)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!("{} Morning alerts resumed.", "🔔".green().bold());
                 }
                 "gist" => {
-                    state.set_sync_gist(true);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_sync_gist(true)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} Automatic GitHub Gist sync resumed.",
                         "▶️".green().bold()
                     );
                 }
                 "gsheet" => {
-                    state.set_sync_gsheet(true);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| s.set_sync_gsheet(true)) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} Automatic Google Sheets sync resumed.",
                         "▶️".green().bold()
                     );
                 }
                 _ => {
-                    state.set_morning_alerts(true);
-                    state.set_vacation(false, None);
-                    let _ = state.save(&state_file);
+                    if let Err(e) = store.update(|s| {
+                        s.set_morning_alerts(true);
+                        s.set_vacation(false, None);
+                    }) {
+                        eprintln!("{} Failed to save state: {e}", "❌".red());
+                        return;
+                    }
                     println!(
                         "{} System RESUMED (Normal semester operations active).",
                         "▶️".green().bold()
@@ -591,24 +629,26 @@ async fn main() {
         }
         Some(Commands::SetGist { id }) => {
             let clean_id = id.trim().to_string();
-            state.gist_id = Some(clean_id.clone());
-            if let Err(e) = state.save(&state_file) {
-                eprintln!("{} Failed to save state: {e}", "❌".red());
-            } else {
-                println!(
-                    "{} Linked GitHub Gist ID: {}",
-                    "🔗".green().bold(),
-                    clean_id.cyan().bold()
-                );
-                println!(
-                    "   Raw subscription URL:\n   {}",
-                    format!(
-                        "https://gist.githubusercontent.com/raw/{}/routine.ics",
-                        clean_id
-                    )
-                    .yellow()
-                    .bold()
-                );
+            match store.update(|s| s.gist_id = Some(clean_id.clone())) {
+                Ok(()) => {
+                    println!(
+                        "{} Linked GitHub Gist ID: {}",
+                        "🔗".green().bold(),
+                        clean_id.cyan().bold()
+                    );
+                    println!(
+                        "   Raw subscription URL:\n   {}",
+                        format!(
+                            "https://gist.githubusercontent.com/raw/{}/routine.ics",
+                            clean_id
+                        )
+                        .yellow()
+                        .bold()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{} Failed to save state: {e}", "❌".red());
+                }
             }
             return;
         }
@@ -642,15 +682,6 @@ async fn main() {
                         println!("   • Total classes extracted: {}", raw_sched.entries.len());
                         println!("   • Semester: {}", raw_sched.semester_name.yellow().bold());
 
-                        // CRITICAL FIX: Filter completed courses before exporting routine.ics!
-                        let active_sched = raw_sched.filter_active(&state.dropped_courses);
-                        let ics_path = resolve_ics_path();
-                        let _ = export_ics_file(&active_sched, &ics_path, state.semester_end_date);
-                        println!(
-                            "   • Exported active calendar to: {}",
-                            ics_path.display().to_string().cyan()
-                        );
-
                         // Auto-import attendance records if attendance_data.json was extracted (M-08)
                         let att_path = path
                             .parent()
@@ -663,9 +694,10 @@ async fn main() {
                                 .and_then(|s| s.trim().parse::<i64>().ok())
                                 .unwrap_or(0);
                             if admin_chat_id > 0 {
-                                match state.import_ucam_attendance_file(admin_chat_id, &att_path) {
-                                    Ok(count) => {
-                                        let _ = state.save(&state_file);
+                                match store.update(|s| {
+                                    s.import_ucam_attendance_file(admin_chat_id, &att_path)
+                                }) {
+                                    Ok(Ok(count)) => {
                                         println!(
                                             "   • {} Imported official attendance for {} courses into Chat ID {}!",
                                             "📊".green().bold(),
@@ -673,12 +705,25 @@ async fn main() {
                                             admin_chat_id
                                         );
                                     }
-                                    Err(e) => eprintln!("   • ⚠️ Attendance import notice: {e}"),
+                                    Ok(Err(e)) => {
+                                        eprintln!("   • ⚠️ Attendance import notice: {e}")
+                                    }
+                                    Err(e) => eprintln!("   • ⚠️ State save failed: {e}"),
                                 }
                             } else {
                                 println!("   • ℹ️ Attendance data extracted, but no ADMIN_CHAT_ID or TELEGRAM_CHAT_ID configured to assign attendance to.");
                             }
                         }
+
+                        // Re-read fresh state after scrape & attendance import
+                        let state = store.read();
+                        let active_sched = raw_sched.filter_active(&state.dropped_courses);
+                        let ics_path = resolve_ics_path();
+                        let _ = export_ics_file(&active_sched, &ics_path, state.semester_end_date);
+                        println!(
+                            "   • Exported active calendar to: {}",
+                            ics_path.display().to_string().cyan()
+                        );
 
                         if *local_only {
                             println!("🔒 Local-only mode active: skipping cloud Gist and Google Sheets sync.");
@@ -840,6 +885,7 @@ async fn main() {
     };
 
     // Apply dropped course filter
+    let state = store.read();
     let mut schedule = raw_schedule.filter_active(&state.dropped_courses);
 
     // Apply section filter if requested

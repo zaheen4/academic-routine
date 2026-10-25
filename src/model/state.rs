@@ -813,6 +813,7 @@ impl RoutineState {
     /// # Errors
     /// Returns [`StateError`] if writing, syncing, or renaming fails.
     pub fn save(&self, path: &Path) -> Result<(), StateError> {
+        static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let json =
             serde_json::to_string_pretty(self).map_err(|e| StateError::Json(e.to_string()))?;
 
@@ -826,7 +827,8 @@ impl RoutineState {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("routine_state.json");
-        let tmp_path = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
+        let nonce = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
         let backup = backup_path(path);
 
         {
@@ -853,14 +855,8 @@ impl RoutineState {
         }
 
         if path.exists() {
-            // Keep the last-known-good file. On Unix rename replaces an old backup.
-            if let Err(error) = fs::rename(path, &backup) {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(StateError::Io {
-                    path: path.display().to_string(),
-                    message: format!("failed to create backup: {error}"),
-                });
-            }
+            // Best-effort backup; tolerate ENOENT if removed concurrently.
+            let _ = fs::copy(path, &backup);
         }
 
         if let Err(error) = fs::rename(&tmp_path, path) {
@@ -945,6 +941,51 @@ fn quarantine_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{file_name}.corrupt-{timestamp}"))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FileStamp {
+    mtime: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+impl FileStamp {
+    fn from_path(path: &Path) -> Option<Self> {
+        let meta = fs::metadata(path).ok()?;
+        Some(Self {
+            mtime: meta.modified().ok(),
+            len: meta.len(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct StoreInner {
+    state: RoutineState,
+    stamp: Option<FileStamp>,
+}
+
+impl StoreInner {
+    fn refresh(&mut self, path: &Path) {
+        let current_stamp = FileStamp::from_path(path);
+        if current_stamp.is_some() && current_stamp == self.stamp {
+            return;
+        }
+
+        match RoutineState::load(path) {
+            Ok(Some(fresh)) => {
+                self.state = fresh;
+                self.stamp = current_stamp;
+            }
+            Ok(None) => {
+                // File was removed externally; keep in-memory copy, clear stamp
+                self.stamp = None;
+            }
+            Err(e) => {
+                eprintln!("⚠️ state refresh skipped: {e}");
+            }
+        }
+    }
+}
+
 /// Thread-safe owner of the in-memory state and its on-disk path.
 ///
 /// Handlers mutate through [`StateStore::update`], which holds the lock across
@@ -953,7 +994,7 @@ fn quarantine_path(path: &Path) -> PathBuf {
 #[derive(Debug, Clone)]
 pub struct StateStore {
     path: PathBuf,
-    inner: Arc<Mutex<RoutineState>>,
+    inner: Arc<Mutex<StoreInner>>,
     recovery_note: Arc<Mutex<Option<String>>>,
 }
 
@@ -967,9 +1008,13 @@ impl StateStore {
         let existed = path.exists();
         let (mut state, note) = RoutineState::open_or_recover(&path)?;
         let cleaned = state.clean_expired_vacation();
+        let initial_stamp = FileStamp::from_path(&path);
         let store = Self {
             path,
-            inner: Arc::new(Mutex::new(state)),
+            inner: Arc::new(Mutex::new(StoreInner {
+                state,
+                stamp: initial_stamp,
+            })),
             recovery_note: Arc::new(Mutex::new(note.clone())),
         };
         if existed || cleaned {
@@ -977,18 +1022,27 @@ impl StateStore {
             if let Err(error) = store.save_current() {
                 eprintln!("⚠️ Could not persist migrated state: {error}");
             }
+            // Set the fingerprint from the file AFTER that save
+            if let Ok(mut guard) = store.inner.lock() {
+                guard.stamp = FileStamp::from_path(&store.path);
+            }
         }
         Ok((store, note))
     }
 
     fn save_current(&self) -> Result<(), StateError> {
-        self.lock().save(&self.path)
+        let mut guard = self.lock();
+        guard.state.save(&self.path)?;
+        guard.stamp = FileStamp::from_path(&self.path);
+        Ok(())
     }
 
     /// Returns a snapshot of the current state.
     #[must_use]
     pub fn read(&self) -> RoutineState {
-        self.lock().clone()
+        let mut guard = self.lock();
+        guard.refresh(&self.path);
+        guard.state.clone()
     }
 
     /// Applies a mutation and persists the result atomically.
@@ -998,15 +1052,18 @@ impl StateStore {
     /// applied, so callers should report the error to the user/admin.
     pub fn update<R>(&self, mutate: impl FnOnce(&mut RoutineState) -> R) -> Result<R, StateError> {
         let mut guard = self.lock();
-        let result = mutate(&mut guard);
-        guard.save(&self.path)?;
+        guard.refresh(&self.path);
+        let result = mutate(&mut guard.state);
+        guard.state.save(&self.path)?;
+        guard.stamp = FileStamp::from_path(&self.path);
         Ok(result)
     }
 
     /// Applies a mutation without saving (for read-only projections).
     pub fn with_state<R>(&self, inspect: impl FnOnce(&RoutineState) -> R) -> R {
-        let guard = self.lock();
-        inspect(&guard)
+        let mut guard = self.lock();
+        guard.refresh(&self.path);
+        inspect(&guard.state)
     }
 
     /// Replaces the entire state and persists it.
@@ -1014,9 +1071,7 @@ impl StateStore {
     /// # Errors
     /// Returns [`StateError`] if the save fails.
     pub fn replace(&self, state: RoutineState) -> Result<(), StateError> {
-        let mut guard = self.lock();
-        *guard = state;
-        guard.save(&self.path)
+        self.update(|s| *s = state)
     }
 
     /// Returns the state file path.
@@ -1034,7 +1089,7 @@ impl StateStore {
             .clone()
     }
 
-    fn lock(&self) -> MutexGuard<'_, RoutineState> {
+    fn lock(&self) -> MutexGuard<'_, StoreInner> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1459,5 +1514,85 @@ mod tests {
             loaded.get_attendance(1, "CSE-4101").map(|r| r.attended),
             Some(25)
         );
+    }
+
+    #[test]
+    fn test_external_write_survives_later_update() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store_a, _) = StateStore::open(path.clone()).unwrap();
+        let (store_b, _) = StateStore::open(path.clone()).unwrap();
+
+        store_a
+            .update(|s| s.set_attendance(100, "CSE-4101", 5, 1))
+            .unwrap();
+        store_b.update(|s| s.set_vacation(true, None)).unwrap();
+        store_a.update(|s| s.set_morning_alerts(false)).unwrap();
+
+        let final_state = store_b.read();
+        assert_eq!(
+            final_state
+                .get_attendance(100, "CSE-4101")
+                .map(|r| r.attended),
+            Some(5)
+        );
+        assert!(final_state.is_vacation_active());
+        assert!(!final_state.morning_alerts);
+    }
+
+    #[test]
+    fn test_read_reflects_external_write() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store_a, _) = StateStore::open(path.clone()).unwrap();
+        let (store_b, _) = StateStore::open(path.clone()).unwrap();
+
+        store_a.update(|s| s.drop_course("CSE-4101")).unwrap();
+        assert!(store_b.read().is_dropped("CSE-4101"));
+    }
+
+    #[test]
+    fn test_refresh_error_keeps_memory_and_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store, _) = StateStore::open(path.clone()).unwrap();
+        store.update(|s| s.drop_course("CSE-4101")).unwrap();
+
+        // Overwrite file with corrupt content externally
+        fs::write(&path, "{ corrupt json").unwrap();
+
+        // store.read() should log warning and keep in-memory state
+        assert!(store.read().is_dropped("CSE-4101"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{ corrupt json");
+    }
+
+    #[test]
+    fn test_concurrent_writers_never_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store_a, _) = StateStore::open(path.clone()).unwrap();
+        let (store_b, _) = StateStore::open(path.clone()).unwrap();
+
+        let handle_a = std::thread::spawn(move || {
+            for _ in 0..50 {
+                store_a
+                    .update(|s| s.record_attendance(1, "CSE-4101", true))
+                    .unwrap();
+            }
+        });
+
+        let handle_b = std::thread::spawn(move || {
+            for _ in 0..50 {
+                store_b
+                    .update(|s| s.record_attendance(2, "CSE-4102", true))
+                    .unwrap();
+            }
+        });
+
+        handle_a.join().unwrap();
+        handle_b.join().unwrap();
+
+        let loaded = RoutineState::load(&path).unwrap();
+        assert!(loaded.is_some(), "final file must parse successfully");
     }
 }

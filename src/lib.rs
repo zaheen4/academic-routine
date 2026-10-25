@@ -29,6 +29,6 @@ pub use exporters::{
 pub use model::{
     academic_now, codes_match, current_academic_day, next_academic_day, AttendanceRecord,
     AttendanceStatus, ChangeType, CourseEntry, DayOfWeek, ParseDayError, RoutineState, Schedule,
-    ScheduleConflict, ScheduleDiff, ScheduleDiffItem, StateError, TeacherContact, TimeSlot,
-    TimeSlotError,
+    ScheduleConflict, ScheduleDiff, ScheduleDiffItem, StateError, StateStore, TeacherContact,
+    TimeSlot, TimeSlotError,
 };
