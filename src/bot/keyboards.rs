@@ -56,35 +56,18 @@ pub fn next_keyboard() -> InlineKeyboardMarkup {
 }
 
 /// Builds day-switcher buttons for the weekly routine view.
-/// Weekdays are strictly emojiless. Includes Friday and Saturday (L-08).
+/// Weekdays are strictly emojiless (Sun–Thu academic week; Friday & Saturday are weekend holidays).
 #[must_use]
 pub fn routine_days_keyboard(active_day: Option<DayOfWeek>) -> InlineKeyboardMarkup {
-    let row1_days = [
-        (DayOfWeek::Sat, "Sat", "day_sat"),
+    let days = [
         (DayOfWeek::Sun, "Sun", "day_sun"),
         (DayOfWeek::Mon, "Mon", "day_mon"),
         (DayOfWeek::Tue, "Tue", "day_tue"),
-    ];
-
-    let row2_days = [
         (DayOfWeek::Wed, "Wed", "day_wed"),
         (DayOfWeek::Thu, "Thu", "day_thu"),
-        (DayOfWeek::Fri, "Fri", "day_fri"),
     ];
 
-    let row1 = row1_days
-        .into_iter()
-        .map(|(day, label, cb)| {
-            let text = if Some(day) == active_day {
-                format!("❯ {label} ❮")
-            } else {
-                label.to_string()
-            };
-            InlineKeyboardButton::callback(text, cb)
-        })
-        .collect();
-
-    let row2 = row2_days
+    let row1 = days
         .into_iter()
         .map(|(day, label, cb)| {
             let text = if Some(day) == active_day {
@@ -102,12 +85,12 @@ pub fn routine_days_keyboard(active_day: Option<DayOfWeek>) -> InlineKeyboardMar
         "📋 Overview"
     };
 
-    let row3 = vec![
+    let row2 = vec![
         InlineKeyboardButton::callback(overview_label, "day_all"),
         InlineKeyboardButton::callback("📅 Today", "nav_today"),
     ];
 
-    InlineKeyboardMarkup::new(vec![row1, row2, row3])
+    InlineKeyboardMarkup::new(vec![row1, row2])
 }
 
 /// Builds 1-tap contact buttons for a faculty profile card.
@@ -224,4 +207,28 @@ pub fn calendar_subscription_keyboard(gist_id: Option<&str>) -> InlineKeyboardMa
     ]);
 
     InlineKeyboardMarkup::new(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_routine_days_keyboard_academic_days_only() {
+        let kb = routine_days_keyboard(Some(DayOfWeek::Mon));
+        assert_eq!(kb.inline_keyboard.len(), 2);
+
+        // Row 1: strictly 5 academic teaching days (Sun..=Thu)
+        let row1 = &kb.inline_keyboard[0];
+        assert_eq!(row1.len(), 5);
+
+        let labels: Vec<&str> = row1.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(labels, vec!["Sun", "❯ Mon ❮", "Tue", "Wed", "Thu"]);
+
+        // Verify Friday and Saturday are excluded
+        for btn in row1 {
+            assert!(!btn.text.contains("Fri"));
+            assert!(!btn.text.contains("Sat"));
+        }
+    }
 }
