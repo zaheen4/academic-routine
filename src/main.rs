@@ -289,7 +289,7 @@ async fn main() {
             let chat_id_str =
                 std::env::var("TELEGRAM_CHAT_ID").unwrap_or_else(|_| "Not configured".to_string());
             let env_username = std::env::var("TELEGRAM_USERNAME").ok();
-            let resolved_user = state.telegram_username.as_ref().or(env_username.as_ref());
+            let resolved_user = state.owner_username.as_ref().or(env_username.as_ref());
             let user_info = resolved_user
                 .map(|u| format!("{u} [Chat {chat_id_str}]"))
                 .unwrap_or_else(|| format!("Chat {chat_id_str}"));
@@ -454,7 +454,7 @@ async fn main() {
                 _ => {
                     let state = store.read();
                     let user_info = state
-                        .telegram_username
+                        .owner_username
                         .as_deref()
                         .map(|u| format!(" ({u})"))
                         .unwrap_or_default();

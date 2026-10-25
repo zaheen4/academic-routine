@@ -434,6 +434,7 @@ mod tests {
             "user_attendance",
             "user_sections",
             "telegram_username",
+            "owner_username",
             "muted_morning_alerts",
             "user_preclass_reminders",
             "reminders_sent",

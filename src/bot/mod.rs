@@ -75,8 +75,8 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
                     .or_else(|| chat.first_name().map(|n| n.to_string()));
                 if let Some(h) = handle {
                     let _ = info_ctx.store.update(|state| {
-                        if state.telegram_username.as_deref() != Some(&h) {
-                            state.telegram_username = Some(h.clone());
+                        if state.owner_username.as_deref() != Some(&h) {
+                            state.owner_username = Some(h.clone());
                         }
                     });
                 }
@@ -85,7 +85,7 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
 
         let state = shared_ctx.store.read();
         let user_info = state
-            .telegram_username
+            .owner_username
             .as_deref()
             .map(|u| format!("{u} [Chat {admin_chat_id}]"))
             .unwrap_or_else(|| format!("Chat ID: {admin_chat_id}"));

@@ -766,6 +766,7 @@ impl RoutineState {
                 state.apply_env_defaults();
                 Ok((state, None))
             }
+            Err(error @ StateError::UnsupportedVersion { .. }) => Err(error),
             Err(error) => {
                 let quarantine = quarantine_path(path);
                 if let Err(rename_error) = fs::rename(path, &quarantine) {
@@ -1594,5 +1595,80 @@ mod tests {
 
         let loaded = RoutineState::load(&path).unwrap();
         assert!(loaded.is_some(), "final file must parse successfully");
+    }
+
+    #[test]
+    fn test_unsupported_version_refused_without_quarantine() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let future_json = r#"{
+            "schema_version": 99,
+            "semester_name": "Fall 2099"
+        }"#;
+        fs::write(&path, future_json).unwrap();
+
+        let res = RoutineState::open_or_recover(&path);
+        match res {
+            Err(StateError::UnsupportedVersion { found, supported }) => {
+                assert_eq!(found, 99);
+                assert_eq!(supported, STATE_SCHEMA_VERSION);
+            }
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+
+        assert!(path.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), future_json);
+
+        let corrupt_files: Vec<_> = fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert!(corrupt_files.is_empty());
+    }
+
+    #[test]
+    fn test_unsupported_version_on_refresh_is_not_clobbered() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let (store, _) = StateStore::open(path.clone()).unwrap();
+        store.update(|s| s.drop_course("CSE-4101")).unwrap();
+
+        let future_json = r#"{"schema_version": 99}"#;
+        fs::write(&path, future_json).unwrap();
+
+        assert!(store.read().is_dropped("CSE-4101"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), future_json);
+    }
+
+    #[test]
+    fn test_legacy_telegram_username_migrates_to_owner_username() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_state_path(&temp_dir);
+        let legacy_json = r#"{
+            "schema_version": 2,
+            "semester_name": "Summer 2026",
+            "owner_username": null,
+            "telegram_username": "@legacy"
+        }"#;
+        fs::write(&path, legacy_json).unwrap();
+
+        let (store, _) = StateStore::open(path.clone()).unwrap();
+        assert_eq!(store.read().owner_username.as_deref(), Some("@legacy"));
+
+        let handle = "@legacy".to_string();
+        store
+            .update(|s| {
+                if s.owner_username.as_deref() != Some(&handle) {
+                    s.owner_username = Some(handle.clone());
+                }
+            })
+            .unwrap();
+        assert_eq!(store.read().owner_username.as_deref(), Some("@legacy"));
+        assert_eq!(store.read().telegram_username, None);
+
+        let (reopened, _) = StateStore::open(path).unwrap();
+        assert_eq!(reopened.read().owner_username.as_deref(), Some("@legacy"));
+        assert_eq!(reopened.read().telegram_username, None);
     }
 }

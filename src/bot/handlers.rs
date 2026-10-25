@@ -728,7 +728,7 @@ pub fn render_status_card(
     chat_id: ChatId,
 ) -> (String, InlineKeyboardMarkup) {
     let user_display = state
-        .telegram_username
+        .owner_username
         .as_deref()
         .map(|u| format!("{u} [Chat {chat_id}]"))
         .unwrap_or_else(|| format!("Chat {chat_id}"));
