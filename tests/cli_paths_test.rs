@@ -5,6 +5,39 @@ use academic_routine::{
 };
 use std::path::PathBuf;
 
+/// `std::env` is process-global, so tests that mutate it must not run concurrently.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Restores the captured environment variables when dropped.
+struct EnvRestore(Vec<(&'static str, Option<String>)>);
+
+impl EnvRestore {
+    fn capture(keys: &[&'static str]) -> Self {
+        Self(
+            keys.iter()
+                .map(|&key| (key, std::env::var(key).ok()))
+                .collect(),
+        )
+    }
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        for (key, value) in &self.0 {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
 #[test]
 fn sync_ucam_file_target_may_not_exist() {
     let missing = PathBuf::from("nonexistent/directory/routine_target.json");
@@ -42,12 +75,14 @@ fn read_command_falls_back_only_when_no_file_given() {
 
 #[test]
 fn admin_chat_id_precedence_in_bot_context() {
+    let _lock = env_lock();
+    let _env = EnvRestore::capture(&["ADMIN_CHAT_ID", "TELEGRAM_CHAT_ID"]);
+
     let temp_dir = tempfile::tempdir().unwrap();
     let state_file = temp_dir.path().join("routine_state.json");
     let routine_file = temp_dir.path().join("routine_data.json");
     std::fs::write(&routine_file, "{}").unwrap();
 
-    // Use a lock/serialized env test since std::env affects process
     std::env::set_var("ADMIN_CHAT_ID", "987654321");
     std::env::remove_var("TELEGRAM_CHAT_ID");
 
@@ -60,13 +95,13 @@ fn admin_chat_id_precedence_in_bot_context() {
     .unwrap();
 
     assert_eq!(ctx.admin_chat_id, Some(987654321));
-
-    // Cleanup env
-    std::env::remove_var("ADMIN_CHAT_ID");
 }
 
 #[test]
 fn admin_chat_id_precedence_in_cli_resolver() {
+    let _lock = env_lock();
+    let _env = EnvRestore::capture(&["ADMIN_CHAT_ID", "TELEGRAM_CHAT_ID"]);
+
     std::env::set_var("ADMIN_CHAT_ID", "123456789");
     std::env::set_var("TELEGRAM_CHAT_ID", "987654321");
     assert_eq!(resolve_admin_chat_id(), Some(123456789));
