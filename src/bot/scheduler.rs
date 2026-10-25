@@ -2,7 +2,6 @@
 
 use crate::bot::handlers::{escape_html, BotContext};
 use crate::model::day::{academic_now, current_academic_day};
-use crate::model::state::RoutineState;
 use chrono::NaiveTime;
 use std::sync::Arc;
 use teloxide::prelude::*;
@@ -35,7 +34,12 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
         eprintln!("Pre-briefing Gist sync note: {e}");
     }
 
-    let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+    let today_date = academic_now().date_naive();
+    let state = ctx.store.read();
+
+    if state.morning_briefing_was_sent(today_date) {
+        return;
+    }
 
     if state.is_vacation_active() {
         println!("⏰ Scheduler: Vacation mode is active. Skipping 06:00 AM morning briefing.");
@@ -43,7 +47,9 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
     }
 
     if !state.morning_alerts {
-        println!("⏰ Scheduler: Morning alerts globally paused. Skipping 06:00 AM morning briefing.");
+        println!(
+            "⏰ Scheduler: Morning alerts globally paused. Skipping 06:00 AM morning briefing."
+        );
         return;
     }
 
@@ -57,7 +63,6 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
     }
 
     let today = current_academic_day();
-    let mut state_dirty = false;
 
     for &cid in &recipient_chats {
         if !state.is_morning_alerts_enabled(cid) {
@@ -121,8 +126,7 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
                 || err_msg.contains("user is deactivated")
             {
                 eprintln!("Chat {cid} blocked the bot or is invalid; muting morning alerts.");
-                state.set_user_morning_alerts(cid, false);
-                state_dirty = true;
+                let _ = ctx.store.update(|s| s.set_user_morning_alerts(cid, false));
             } else {
                 eprintln!("Failed to send morning briefing to {cid}: {e}");
             }
@@ -132,9 +136,9 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
         tokio::time::sleep(std::time::Duration::from_millis(35)).await;
     }
 
-    if state_dirty {
-        let _ = state.save(&ctx.state_path);
-    }
+    let _ = ctx
+        .store
+        .update(|s| s.mark_morning_briefing_sent(today_date));
 }
 
 fn duration_until_next_6am() -> std::time::Duration {
@@ -153,24 +157,40 @@ fn duration_until_next_6am() -> std::time::Duration {
     std::time::Duration::from_secs(diff_seconds)
 }
 
+/// Returns the minute difference if a class starting at `start_mins` is due for a reminder at `now_mins`.
+#[must_use]
+pub fn reminder_due_diff(start_mins: u32, now_mins: u32) -> Option<u32> {
+    if start_mins > now_mins {
+        let diff = start_mins - now_mins;
+        if (1..=30).contains(&diff) {
+            return Some(diff);
+        }
+    }
+    None
+}
+
 /// Proactively monitors upcoming classes for today and sends a Telegram reminder 30 minutes before each class starts.
 pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc<BotContext>) {
     use chrono::Timelike;
-    let mut notified_sessions = std::collections::HashSet::<String>::new();
-    let mut current_day = current_academic_day();
+    let mut last_prune_date = academic_now().date_naive();
+
+    // Initial prune on startup
+    let _ = ctx
+        .store
+        .update(|s| s.prune_reminders_sent(last_prune_date));
 
     loop {
         // Check every 30 seconds
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
-        let today = current_academic_day();
-        if today != current_day {
-            // New academic day: reset notified sessions
-            notified_sessions.clear();
-            current_day = today;
+        let today_date = academic_now().date_naive();
+        if today_date != last_prune_date {
+            // New academic day: prune sent reminders older than today
+            let _ = ctx.store.update(|s| s.prune_reminders_sent(today_date));
+            last_prune_date = today_date;
         }
 
-        let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+        let state = ctx.store.read();
 
         if state.is_vacation_active() || !state.morning_alerts {
             continue;
@@ -187,6 +207,7 @@ pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc
             continue;
         }
 
+        let today = current_academic_day();
         let now = academic_now();
         let now_time = now.time();
         let now_mins = now_time.hour() * 60 + now_time.minute();
@@ -201,19 +222,15 @@ pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc
             for c in &classes {
                 let start_mins = c.time_slot.start().hour() * 60 + c.time_slot.start().minute();
                 let session_key = format!(
-                    "{cid}-{today}-{}-{}-{}-{}",
+                    "{}|{}|{}|{}",
+                    today_date.format("%Y-%m-%d"),
                     c.code,
                     c.section,
-                    c.room,
-                    c.time_slot.start()
+                    c.time_slot.start().format("%H%M")
                 );
 
-                if start_mins >= now_mins {
-                    let diff = start_mins - now_mins;
-                    // Alert in the 29-30 minute window
-                    if (29..=30).contains(&diff) && !notified_sessions.contains(&session_key) {
-                        notified_sessions.insert(session_key);
-
+                if let Some(diff) = reminder_due_diff(start_mins, now_mins) {
+                    if !state.reminder_was_sent(cid, &session_key) {
                         let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
                         let mut msg = format!(
                             "⏰ <b>Upcoming Class Reminder (Starts in {} minutes!)</b>\n\n\
@@ -238,10 +255,16 @@ pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc
                             ));
                         }
 
-                        let _ = bot
+                        let send_res = bot
                             .send_message(ChatId(cid), msg)
                             .parse_mode(teloxide::types::ParseMode::Html)
                             .await;
+
+                        if send_res.is_ok() {
+                            let _ = ctx.store.update(|s| {
+                                s.mark_reminder_sent(cid, session_key.clone());
+                            });
+                        }
 
                         // 35ms spacing for multi-user rate limit safety
                         tokio::time::sleep(std::time::Duration::from_millis(35)).await;
@@ -249,5 +272,20 @@ pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reminder_due_diff() {
+        assert_eq!(reminder_due_diff(600, 570), Some(30));
+        assert_eq!(reminder_due_diff(600, 571), Some(29));
+        assert_eq!(reminder_due_diff(600, 599), Some(1));
+        assert_eq!(reminder_due_diff(600, 600), None);
+        assert_eq!(reminder_due_diff(600, 601), None);
+        assert_eq!(reminder_due_diff(600, 569), None);
     }
 }

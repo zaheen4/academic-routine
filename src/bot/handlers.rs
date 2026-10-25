@@ -6,7 +6,9 @@ use crate::exporters::ics::export_ics_file;
 use crate::model::course::{CourseEntry, TeacherContact};
 use crate::model::day::{academic_now, current_academic_day, next_academic_day, DayOfWeek};
 use crate::model::schedule::Schedule;
-use crate::model::state::{codes_match, AttendanceRecord, AttendanceStatus, RoutineState};
+use crate::model::state::{
+    codes_match, AttendanceRecord, AttendanceStatus, RoutineState, StateError, StateStore,
+};
 use chrono::Timelike;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -100,6 +102,12 @@ pub struct BotContext {
     pub routine_path: PathBuf,
     /// Path to routine_state.json.
     pub state_path: PathBuf,
+    /// Thread-safe in-memory state store with atomic persistence.
+    pub store: StateStore,
+    /// Admin chat ID (from ADMIN_CHAT_ID or TELEGRAM_CHAT_ID).
+    pub admin_chat_id: Option<i64>,
+    /// Single-flight lock preventing overlapping /sync scrapes.
+    pub sync_lock: Arc<tokio::sync::Mutex<()>>,
     /// Default student section (e.g. "B2").
     pub section: Option<String>,
     /// Whether to disable the HTTP health check server.
@@ -107,13 +115,54 @@ pub struct BotContext {
 }
 
 impl BotContext {
+    /// Creates a new [`BotContext`], initializing the state store and resolving admin configuration.
+    ///
+    /// # Errors
+    /// Returns [`StateError`] if loading or quarantining state fails.
+    pub fn new(
+        routine_path: PathBuf,
+        state_path: PathBuf,
+        section: Option<String>,
+        no_http: bool,
+    ) -> Result<Self, StateError> {
+        let (store, note) = StateStore::open(state_path.clone())?;
+        if let Some(n) = note {
+            eprintln!("⚠️ StateStore notice: {n}");
+        }
+
+        let admin_chat_id = std::env::var("ADMIN_CHAT_ID")
+            .or_else(|_| std::env::var("TELEGRAM_CHAT_ID"))
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok());
+
+        Ok(Self {
+            routine_path,
+            state_path,
+            store,
+            admin_chat_id,
+            sync_lock: Arc::new(tokio::sync::Mutex::new(())),
+            section,
+            no_http,
+        })
+    }
+
+    /// Returns true if `from_id` belongs to the configured bot administrator.
+    #[must_use]
+    pub fn is_admin(&self, from_id: i64) -> bool {
+        self.admin_chat_id == Some(from_id)
+    }
+
     /// Loads the active, filtered schedule based on current state and chat's section preference.
-    pub fn load_active_schedule_for_chat(&self, chat_id: i64) -> Result<(Schedule, RoutineState), String> {
-        let state = RoutineState::load_or_default(&self.state_path).unwrap_or_default();
+    pub fn load_active_schedule_for_chat(
+        &self,
+        chat_id: i64,
+    ) -> Result<(Schedule, RoutineState), String> {
+        let state = self.store.read();
         let raw = load_routine_file(&self.routine_path)
             .map_err(|e| format!("Failed to read routine: {e}"))?;
 
-        let mut sched = raw.filter_active(&state.dropped_courses);
+        let dropped = state.dropped_for(chat_id);
+        let mut sched = raw.filter_active(&dropped);
 
         // Check user/chat section preference
         let user_sec = state
@@ -161,11 +210,12 @@ impl BotContext {
 
         if let Some(ref gid) = state.gist_id {
             if self.routine_path.exists() {
-                return crate::exporters::gist::sync_gist_bundle_with_state(
+                let meta = state.public_meta();
+                return crate::exporters::gist::sync_gist_bundle(
                     gid,
                     &ics_path,
                     &self.routine_path,
-                    Some(&self.state_path),
+                    &meta,
                 )
                 .await;
             }
@@ -177,27 +227,26 @@ impl BotContext {
 
     /// Refreshes routine_data.json and routine_state.json from GitHub Gist, writes locally, and updates calendar feed.
     pub async fn refresh_from_gist(&self) -> Result<String, String> {
-        let mut state = RoutineState::load_or_default(&self.state_path).unwrap_or_default();
-        let gid = match state.gist_id.as_deref() {
-            Some(id) => id.to_string(),
-            None => std::env::var("GIST_ID")
-                .map_err(|_| "No Gist ID configured in state or environment.".to_string())?,
+        let gid = {
+            let state = self.store.read();
+            match state.gist_id.as_deref() {
+                Some(id) => id.to_string(),
+                None => std::env::var("GIST_ID")
+                    .map_err(|_| "No Gist ID configured in state or environment.".to_string())?,
+            }
         };
 
-        // If routine_state.json is present on Gist, sync state fields
-        if let Ok(state_json) = crate::exporters::gist::fetch_gist_state_data(&gid).await {
-            if let Ok(remote_state) = serde_json::from_str::<RoutineState>(&state_json) {
-                for d in remote_state.dropped_courses {
-                    state.drop_course(&d);
-                }
-                let _ = state.save(&self.state_path);
-            }
+        // If routine_meta.json is present on Gist, sync owner/global fields
+        if let Ok(Some(remote_meta)) = crate::exporters::gist::fetch_gist_meta_data(&gid).await {
+            let _ = self.store.update(|state| {
+                state.apply_public_meta(&remote_meta);
+            });
         }
 
         let json_content = crate::exporters::gist::fetch_gist_routine_data(&gid).await?;
 
-        // Validate JSON integrity
-        let _parsed = crate::engine::parser::parse_routine_json(&json_content)
+        // Validate JSON integrity with the reporting parser
+        let (_parsed, _issues) = crate::engine::parser::parse_routine_json_report(&json_content)
             .map_err(|e| format!("Invalid routine data from Gist: {e}"))?;
 
         // Preserve previous routine as baseline before overwriting
@@ -215,7 +264,10 @@ impl BotContext {
 
     /// Returns the path to the previous baseline routine file.
     pub fn routine_prev_path(&self) -> PathBuf {
-        let parent = self.routine_path.parent().unwrap_or_else(|| std::path::Path::new(""));
+        let parent = self
+            .routine_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""));
         let stem = self
             .routine_path
             .file_stem()
@@ -259,10 +311,7 @@ pub fn live_timestamp() -> String {
 
 /// Renders the Today schedule card with live badges and navigation buttons.
 #[must_use]
-pub fn render_today_card(
-    sched: &Schedule,
-    state: &RoutineState,
-) -> (String, InlineKeyboardMarkup) {
+pub fn render_today_card(sched: &Schedule, state: &RoutineState) -> (String, InlineKeyboardMarkup) {
     let today = current_academic_day();
     let classes = sched.for_day(today);
     let now = academic_now().time();
@@ -329,10 +378,7 @@ pub fn render_today_card(
 
 /// Renders the Next Class card with countdown and quick refresh buttons.
 #[must_use]
-pub fn render_next_card(
-    sched: &Schedule,
-    state: &RoutineState,
-) -> (String, InlineKeyboardMarkup) {
+pub fn render_next_card(sched: &Schedule, state: &RoutineState) -> (String, InlineKeyboardMarkup) {
     if state.is_vacation_active() {
         let text = format!(
             "🏖️ <b>Vacation Mode Active (Semester Break)</b>\nNo classes are currently scheduled. Send <code>/vacation off</code> when classes resume.\n───────────────────────────\n{}",
@@ -348,7 +394,11 @@ pub fn render_next_card(
     if let Some(active) = classes.iter().find(|c| c.time_slot.contains_time(now)) {
         let mins_left = (active.time_slot.end().hour() * 60 + active.time_slot.end().minute())
             .saturating_sub(now.hour() * 60 + now.minute());
-        let lab_badge = if active.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+        let lab_badge = if active.is_lab() {
+            " 🔬 <i>[LAB]</i>"
+        } else {
+            ""
+        };
         let text = format!(
             "🔴 <b>CURRENTLY IN SESSION</b>\n───────────────────────────\n\
              <code>{}</code> (ends in <b>{} mins</b>)\n\n\
@@ -369,7 +419,11 @@ pub fn render_next_card(
     } else if let Some(next) = classes.iter().find(|c| c.time_slot.start() > now) {
         let mins_until = (next.time_slot.start().hour() * 60 + next.time_slot.start().minute())
             .saturating_sub(now.hour() * 60 + now.minute());
-        let lab_badge = if next.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+        let lab_badge = if next.is_lab() {
+            " 🔬 <i>[LAB]</i>"
+        } else {
+            ""
+        };
         let text = format!(
             "⏱️ <b>Next Upcoming Class</b>\n───────────────────────────\n\
              ⏳ In <b>{} minutes</b> (starts at <code>{}</code>)\n\n\
@@ -560,10 +614,16 @@ pub fn render_teacher_profile(
         escape_html(name)
     );
     if let Some(ref p) = contact.phone {
-        text.push_str(&format!("📞 <b>Phone:</b> <code>{}</code>\n", escape_html(p)));
+        text.push_str(&format!(
+            "📞 <b>Phone:</b> <code>{}</code>\n",
+            escape_html(p)
+        ));
     }
     if let Some(ref e) = contact.email {
-        text.push_str(&format!("✉️ <b>Email:</b> <code>{}</code>\n", escape_html(e)));
+        text.push_str(&format!(
+            "✉️ <b>Email:</b> <code>{}</code>\n",
+            escape_html(e)
+        ));
     }
 
     if !courses.is_empty() {
@@ -589,10 +649,7 @@ pub fn render_teacher_profile(
 
 /// Renders today's break and study windows card.
 #[must_use]
-pub fn render_free_card(
-    sched: &Schedule,
-    state: &RoutineState,
-) -> (String, InlineKeyboardMarkup) {
+pub fn render_free_card(sched: &Schedule, state: &RoutineState) -> (String, InlineKeyboardMarkup) {
     let today = current_academic_day();
     let classes = sched.for_day(today);
 
@@ -700,8 +757,8 @@ pub fn render_status_card(
         "Not linked".to_string()
     };
 
-    let sheet_name = std::env::var("SPREADSHEET_NAME")
-        .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
+    let sheet_name =
+        std::env::var("SPREADSHEET_NAME").unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
 
     let text = format!(
         "🎓 <b>Academic Routine Assistant Status</b>\n───────────────────────────\n\
@@ -727,10 +784,7 @@ pub fn render_status_card(
 
 /// Renders the section selection card with active tab chevrons.
 #[must_use]
-pub fn render_section_card(
-    chat_id: i64,
-    state: &RoutineState,
-) -> (String, InlineKeyboardMarkup) {
+pub fn render_section_card(chat_id: i64, state: &RoutineState) -> (String, InlineKeyboardMarkup) {
     let active = state.get_user_section(chat_id).unwrap_or("B2");
     let text = format!(
         "🏷️ <b>Class Section Preference</b>\n\
@@ -768,9 +822,14 @@ pub fn render_attendance_dashboard(
         for code in &courses {
             let entry = sched.entries.iter().find(|e| codes_match(&e.code, code));
             let title = entry.map(|e| e.title.as_str()).unwrap_or(code);
-            let lab_badge = entry.map(|e| if e.is_lab() { " 🔬" } else { "" }).unwrap_or("");
+            let lab_badge = entry
+                .map(|e| if e.is_lab() { " 🔬" } else { "" })
+                .unwrap_or("");
 
-            let rec = state.get_attendance(chat_id, code).cloned().unwrap_or_default();
+            let rec = state
+                .get_attendance(chat_id, code)
+                .cloned()
+                .unwrap_or_default();
             let status = rec.status();
             let pct = rec.percentage();
 
@@ -826,9 +885,7 @@ pub fn render_attendance_dashboard(
 
 /// Renders the live calendar subscription card with 1-tap subscription links and feed URL.
 #[must_use]
-pub fn render_calendar_subscription_card(
-    gist_id: Option<&str>,
-) -> (String, InlineKeyboardMarkup) {
+pub fn render_calendar_subscription_card(gist_id: Option<&str>) -> (String, InlineKeyboardMarkup) {
     let markup = calendar_subscription_keyboard(gist_id);
     let resolved_id = gist_id.unwrap_or("");
     let url_feed = if !resolved_id.is_empty() {
@@ -865,18 +922,28 @@ pub async fn handle_command(
 ) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
 
-    // Auto-cache user handle/name in routine_state.json if available
+    // Reject group / supergroup chats: this bot is personal and private (A-02)
+    if msg.chat.is_group() || msg.chat.is_supergroup() {
+        bot.send_message(
+            chat_id,
+            "🔒 Academic Routine Assistant is designed for private direct chats to isolate your attendance, section, and reminders. Please message me directly!",
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let from_id = msg.from.as_ref().map_or(chat_id.0, |u| u.id.0 as i64);
+
+    // Auto-cache user handle/name in RoutineState if available (M-06, M-07)
     if let Some(user) = &msg.from {
         let handle = user
             .username
             .as_ref()
             .map(|u| format!("@{u}"))
             .unwrap_or_else(|| user.first_name.clone());
-        let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-        if state.telegram_username.as_deref() != Some(&handle) {
-            state.telegram_username = Some(handle);
-            let _ = state.save(&ctx.state_path);
-        }
+        let _ = ctx.store.update(|state| {
+            state.touch_user(chat_id.0, Some(&handle));
+        });
     }
 
     match cmd {
@@ -908,7 +975,7 @@ pub async fn handle_command(
         }
 
         Command::Diff => {
-            let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            let state = ctx.store.read();
             let user_sec = state.get_user_section(chat_id.0);
             if let Some(diff) = ctx.detect_routine_diff() {
                 let sec_diff = if let Some(sec) = user_sec {
@@ -939,9 +1006,9 @@ pub async fn handle_command(
         }
 
         Command::Section(sec) => {
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
             let clean = sec.trim().to_uppercase();
             if clean.is_empty() {
+                let state = ctx.store.read();
                 let (text, markup) = render_section_card(chat_id.0, &state);
                 bot.send_message(chat_id, text)
                     .parse_mode(ParseMode::Html)
@@ -954,9 +1021,11 @@ pub async fn handle_command(
                     "ALL" | "*" => "All",
                     _ => &clean,
                 };
-                state.set_user_section(chat_id.0, chosen);
-                let _ = state.save(&ctx.state_path);
+                let _ = ctx.store.update(|state| {
+                    state.set_user_section(chat_id.0, chosen);
+                });
 
+                let state = ctx.store.read();
                 let (text, markup) = render_section_card(chat_id.0, &state);
                 bot.send_message(
                     chat_id,
@@ -970,7 +1039,6 @@ pub async fn handle_command(
 
         Command::Attendance(arg) => {
             let clean = arg.trim();
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
             let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
                 Ok(res) => res,
                 Err(e) => {
@@ -978,6 +1046,7 @@ pub async fn handle_command(
                     return Ok(());
                 }
             };
+            let state = ctx.store.read();
 
             if clean.is_empty() {
                 let (text, markup) = render_attendance_dashboard(chat_id.0, &sched, &state);
@@ -993,11 +1062,9 @@ pub async fn handle_command(
                     let missed = parts[3].parse::<u32>();
                     match (attended, missed) {
                         (Ok(att), Ok(mis)) => {
-                            state.set_attendance(chat_id.0, &code, att, mis);
-                            let _ = state.save(&ctx.state_path);
-                            let rec = state
-                                .get_attendance(chat_id.0, &code)
-                                .cloned()
+                            let rec = ctx
+                                .store
+                                .update(|s| s.set_attendance(chat_id.0, &code, att, mis))
                                 .unwrap_or_default();
                             let msg = format!(
                                 "✅ <b>Attendance record updated for <code>{}</code>!</b>\n\
@@ -1038,8 +1105,7 @@ pub async fn handle_command(
                 let parts: Vec<&str> = clean.split_whitespace().collect();
                 if parts.len() >= 2 {
                     let code = parts[1].to_uppercase();
-                    state.reset_attendance(chat_id.0, &code);
-                    let _ = state.save(&ctx.state_path);
+                    let _ = ctx.store.update(|s| s.reset_attendance(chat_id.0, &code));
                     bot.send_message(
                         chat_id,
                         format!(
@@ -1050,8 +1116,7 @@ pub async fn handle_command(
                     .parse_mode(ParseMode::Html)
                     .await?;
                 } else {
-                    state.reset_all_attendance(chat_id.0);
-                    let _ = state.save(&ctx.state_path);
+                    let _ = ctx.store.update(|s| s.reset_all_attendance(chat_id.0));
                     bot.send_message(chat_id, "🔄 Reset all attendance records for this chat.")
                         .parse_mode(ParseMode::Html)
                         .await?;
@@ -1083,13 +1148,37 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-            state.record_attendance(chat_id.0, &clean, true);
-            let _ = state.save(&ctx.state_path);
+            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
+                Ok(res) => res,
+                Err(e) => {
+                    bot.send_message(chat_id, format!("❌ {e}")).await?;
+                    return Ok(());
+                }
+            };
 
-            let rec: AttendanceRecord = state
-                .get_attendance(chat_id.0, &clean)
-                .cloned()
+            // Validate code against active schedule (L-07)
+            if !sched.entries.iter().any(|e| codes_match(&e.code, &clean)) {
+                let valid_codes = sched
+                    .all_course_codes()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bot.send_message(
+                    chat_id,
+                    format!(
+                        "⚠️ Unknown course code <code>{}</code>.\nValid courses for your schedule: <code>{}</code>",
+                        escape_html(&clean),
+                        escape_html(&valid_codes)
+                    ),
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+                return Ok(());
+            }
+
+            let rec: AttendanceRecord = ctx
+                .store
+                .update(|s| s.record_attendance(chat_id.0, &clean, true))
                 .unwrap_or_default();
             let status = rec.status();
             let bunks_info = match status {
@@ -1137,13 +1226,37 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-            state.record_attendance(chat_id.0, &clean, false);
-            let _ = state.save(&ctx.state_path);
+            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
+                Ok(res) => res,
+                Err(e) => {
+                    bot.send_message(chat_id, format!("❌ {e}")).await?;
+                    return Ok(());
+                }
+            };
 
-            let rec: AttendanceRecord = state
-                .get_attendance(chat_id.0, &clean)
-                .cloned()
+            // Validate code against active schedule (L-07)
+            if !sched.entries.iter().any(|e| codes_match(&e.code, &clean)) {
+                let valid_codes = sched
+                    .all_course_codes()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bot.send_message(
+                    chat_id,
+                    format!(
+                        "⚠️ Unknown course code <code>{}</code>.\nValid courses for your schedule: <code>{}</code>",
+                        escape_html(&clean),
+                        escape_html(&valid_codes)
+                    ),
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+                return Ok(());
+            }
+
+            let rec: AttendanceRecord = ctx
+                .store
+                .update(|s| s.record_attendance(chat_id.0, &clean, false))
                 .unwrap_or_default();
             let status = rec.status();
             let bunks_info = match status {
@@ -1360,22 +1473,17 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-            if state.complete_course(&clean_code) {
-                let _ = state.save(&ctx.state_path);
-                let sync_msg = match ctx.regenerate_and_sync().await {
-                    Ok(url) => format!(
-                        "\n🔄 <i>Calendar feed updated:</i>\n<code>{}</code>",
-                        escape_html(&url)
-                    ),
-                    Err(e) => format!("\n⚠️ <i>Could not sync Gist: {}</i>", escape_html(&e)),
-                };
-
+            let newly_dropped = ctx
+                .store
+                .update(|state| state.drop_course_for(chat_id.0, &clean_code))
+                .unwrap_or(false);
+            if newly_dropped {
                 let resp = format!(
-                    "🏁 <b>Marked course <code>{}</code> as completed!</b>\n\
-                     Its classes are now hidden from your schedule, 6:00 AM daily briefings, and .ics calendar feed.{}\n\n\
+                    "🏁 <b>Marked course <code>{}</code> as completed for your chat!</b>\n\
+                     Its classes are now hidden from your routine and 6:00 AM daily briefings.\n\n\
                      <i>To resume, send <code>/resume {}</code></i>",
-                    clean_code, sync_msg, clean_code
+                    escape_html(&clean_code),
+                    escape_html(&clean_code)
                 );
                 bot.send_message(chat_id, resp)
                     .parse_mode(ParseMode::Html)
@@ -1383,7 +1491,10 @@ pub async fn handle_command(
             } else {
                 bot.send_message(
                     chat_id,
-                    format!("ℹ️ Course <code>{clean_code}</code> is already marked as completed."),
+                    format!(
+                        "ℹ️ Course <code>{}</code> is already marked as completed for your chat.",
+                        escape_html(&clean_code)
+                    ),
                 )
                 .parse_mode(ParseMode::Html)
                 .await?;
@@ -1402,21 +1513,15 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-            if state.resume_course(&clean_code) {
-                let _ = state.save(&ctx.state_path);
-                let sync_msg = match ctx.regenerate_and_sync().await {
-                    Ok(url) => format!(
-                        "\n🔄 <i>Calendar feed updated:</i>\n<code>{}</code>",
-                        escape_html(&url)
-                    ),
-                    Err(e) => format!("\n⚠️ <i>Could not sync Gist: {}</i>", escape_html(&e)),
-                };
-
+            let newly_resumed = ctx
+                .store
+                .update(|state| state.resume_course_for(chat_id.0, &clean_code))
+                .unwrap_or(false);
+            if newly_resumed {
                 let resp = format!(
-                    "✅ <b>Resumed course <code>{}</code>!</b>\n\
-                     It will now appear on your active routine, morning briefings, and calendar exports.{}",
-                    clean_code, sync_msg
+                    "✅ <b>Resumed course <code>{}</code> for your chat!</b>\n\
+                     It will now appear on your active routine and morning briefings.",
+                    escape_html(&clean_code)
                 );
                 bot.send_message(chat_id, resp)
                     .parse_mode(ParseMode::Html)
@@ -1424,7 +1529,10 @@ pub async fn handle_command(
             } else {
                 bot.send_message(
                     chat_id,
-                    format!("ℹ️ Course <code>{clean_code}</code> was not in the completed list."),
+                    format!(
+                        "ℹ️ Course <code>{}</code> was not in your completed list.",
+                        escape_html(&clean_code)
+                    ),
                 )
                 .parse_mode(ParseMode::Html)
                 .await?;
@@ -1432,14 +1540,18 @@ pub async fn handle_command(
         }
 
         Command::Completed | Command::Finished | Command::Dropped => {
-            let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-            if state.dropped_courses.is_empty() {
-                bot.send_message(chat_id, "ℹ️ No courses are currently marked as completed.")
-                    .await?;
+            let state = ctx.store.read();
+            let effective_dropped = state.dropped_for(chat_id.0);
+            if effective_dropped.is_empty() {
+                bot.send_message(
+                    chat_id,
+                    "ℹ️ No courses are currently marked as completed for your chat.",
+                )
+                .await?;
             } else {
                 let raw_sched = load_routine_file(&ctx.routine_path).ok();
                 let mut text = "🎓 <b>Currently Completed Courses:</b>\n\n".to_string();
-                for c in &state.dropped_courses {
+                for c in &effective_dropped {
                     let title = raw_sched
                         .as_ref()
                         .and_then(|s| {
@@ -1486,12 +1598,11 @@ pub async fn handle_command(
 
         Command::Alerts(action) => {
             let clean = action.trim().to_lowercase();
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-
             match clean.as_str() {
                 "off" | "pause" | "mute" | "stop" => {
-                    state.set_user_morning_alerts(chat_id.0, false);
-                    let _ = state.save(&ctx.state_path);
+                    let _ = ctx
+                        .store
+                        .update(|s| s.set_user_morning_alerts(chat_id.0, false));
                     bot.send_message(
                         chat_id,
                         "🔕 <b>6:00 AM Morning Briefings Muted!</b>\n\
@@ -1502,8 +1613,9 @@ pub async fn handle_command(
                     .await?;
                 }
                 "on" | "resume" | "unmute" | "start" => {
-                    state.set_user_morning_alerts(chat_id.0, true);
-                    let _ = state.save(&ctx.state_path);
+                    let _ = ctx
+                        .store
+                        .update(|s| s.set_user_morning_alerts(chat_id.0, true));
                     bot.send_message(
                         chat_id,
                         "🔔 <b>6:00 AM Morning Briefings Active!</b>\n\
@@ -1513,6 +1625,7 @@ pub async fn handle_command(
                     .await?;
                 }
                 _ => {
+                    let state = ctx.store.read();
                     let is_active = state.is_morning_alerts_enabled(chat_id.0);
                     let status = if is_active {
                         "🔔 <b>ACTIVE</b> (06:00 AM on class days)"
@@ -1537,12 +1650,11 @@ pub async fn handle_command(
 
         Command::Reminders(action) => {
             let clean = action.trim().to_lowercase();
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-
             match clean.as_str() {
                 "off" | "pause" | "mute" | "stop" => {
-                    state.set_user_preclass_reminders(chat_id.0, false);
-                    let _ = state.save(&ctx.state_path);
+                    let _ = ctx
+                        .store
+                        .update(|s| s.set_user_preclass_reminders(chat_id.0, false));
                     bot.send_message(
                         chat_id,
                         "🔕 <b>Pre-Class Reminders Disabled!</b>\n\
@@ -1553,8 +1665,9 @@ pub async fn handle_command(
                     .await?;
                 }
                 "on" | "resume" | "unmute" | "start" => {
-                    state.set_user_preclass_reminders(chat_id.0, true);
-                    let _ = state.save(&ctx.state_path);
+                    let _ = ctx
+                        .store
+                        .update(|s| s.set_user_preclass_reminders(chat_id.0, true));
                     bot.send_message(
                         chat_id,
                         "🔔 <b>Pre-Class Reminders Activated!</b>\n\
@@ -1565,6 +1678,7 @@ pub async fn handle_command(
                     .await?;
                 }
                 _ => {
+                    let state = ctx.store.read();
                     let is_active = state.is_preclass_reminders_enabled(chat_id.0);
                     let status = if is_active {
                         "🔔 <b>ACTIVE</b> (30 mins before each class)"
@@ -1588,13 +1702,18 @@ pub async fn handle_command(
         }
 
         Command::Vacation(param) => {
+            if !ctx.is_admin(from_id) {
+                bot.send_message(chat_id, "🔒 This command is restricted to the bot owner.")
+                    .await?;
+                return Ok(());
+            }
+
             let clean = param.trim();
             let lower = clean.to_lowercase();
-            let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
 
-            if lower.starts_with("off") || lower.starts_with("resume") || lower.starts_with("stop") {
-                state.set_vacation(false, None);
-                let _ = state.save(&ctx.state_path);
+            if lower.starts_with("off") || lower.starts_with("resume") || lower.starts_with("stop")
+            {
+                let _ = ctx.store.update(|s| s.set_vacation(false, None));
                 let _ = ctx.regenerate_and_sync().await;
                 bot.send_message(
                     chat_id,
@@ -1604,8 +1723,7 @@ pub async fn handle_command(
                 .parse_mode(ParseMode::Html)
                 .await?;
             } else if lower.starts_with("on") || lower.starts_with("start") {
-                state.set_vacation(true, None);
-                let _ = state.save(&ctx.state_path);
+                let _ = ctx.store.update(|s| s.set_vacation(true, None));
                 let _ = ctx.regenerate_and_sync().await;
                 bot.send_message(
                     chat_id,
@@ -1619,8 +1737,7 @@ pub async fn handle_command(
                 let date_str = clean.trim_start_matches("until").trim();
                 match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                     Ok(until) => {
-                        state.set_vacation(true, Some(until));
-                        let _ = state.save(&ctx.state_path);
+                        let _ = ctx.store.update(|s| s.set_vacation(true, Some(until)));
                         let _ = ctx.regenerate_and_sync().await;
                         bot.send_message(
                             chat_id,
@@ -1644,6 +1761,7 @@ pub async fn handle_command(
                     }
                 }
             } else {
+                let state = ctx.store.read();
                 let status = if state.is_vacation_active() {
                     if let Some(until) = state.vacation_until {
                         format!("🏖️ <b>ACTIVE</b> (until {until})")
@@ -1671,7 +1789,7 @@ pub async fn handle_command(
         }
 
         Command::Calendar => {
-            let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            let state = ctx.store.read();
             let env_gid = std::env::var("GIST_ID").ok();
             let gid = state.gist_id.as_deref().or(env_gid.as_deref());
             let (text, markup) = render_calendar_subscription_card(gid);
@@ -1682,8 +1800,22 @@ pub async fn handle_command(
         }
 
         Command::Sync => {
-            // Check if Gist sync is available (fast, 100% reliable, zero Cloudflare blocks)
-            let state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
+            if !ctx.is_admin(from_id) {
+                bot.send_message(chat_id, "🔒 This command is restricted to the bot owner.")
+                    .await?;
+                return Ok(());
+            }
+
+            let Ok(_sync_guard) = ctx.sync_lock.try_lock() else {
+                bot.send_message(
+                    chat_id,
+                    "⏳ A routine synchronization is already in progress. Please wait.",
+                )
+                .await?;
+                return Ok(());
+            };
+
+            let state = ctx.store.read();
             let has_gist = state.gist_id.is_some() || std::env::var("GIST_ID").is_ok();
 
             if has_gist {
@@ -1723,7 +1855,9 @@ pub async fn handle_command(
                         return Ok(());
                     }
                     Err(e) => {
-                        eprintln!("Gist refresh notice: {e}. Attempting direct UCAM scrape fallback...");
+                        eprintln!(
+                            "Gist refresh notice: {e}. Attempting direct UCAM scrape fallback..."
+                        );
                     }
                 }
             }
@@ -1743,13 +1877,25 @@ pub async fn handle_command(
 
             match scrape_res {
                 Ok(Ok(path)) => {
-                    let att_path = path.parent().unwrap_or_else(|| std::path::Path::new("")).join("attendance_data.json");
+                    let att_path = path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new(""))
+                        .join("attendance_data.json");
                     let mut att_msg = String::new();
                     if att_path.exists() {
-                        let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
-                        if let Ok(count) = state.import_ucam_attendance_file(chat_id.0, &att_path) {
-                            let _ = state.save(&ctx.state_path);
-                            att_msg = format!("\n📊 <i>Imported official attendance for {} courses.</i>", count);
+                        if let Some(admin_id) = ctx.admin_chat_id {
+                            let count = ctx
+                                .store
+                                .update(|state| {
+                                    state
+                                        .import_ucam_attendance_file(admin_id, &att_path)
+                                        .unwrap_or(0)
+                                })
+                                .unwrap_or(0);
+                            att_msg = format!(
+                                "\n📊 <i>Imported official attendance for {} courses.</i>",
+                                count
+                            );
                         }
                     }
 
@@ -1824,14 +1970,12 @@ pub async fn handle_callback_query(
 
     // If section switch clicked, update user section preference
     if data == "sec_b1" || data == "sec_b2" || data == "sec_all" {
-        let mut state = RoutineState::load_or_default(&ctx.state_path).unwrap_or_default();
         let chosen = match data {
             "sec_b1" => "B1",
             "sec_b2" => "B2",
             _ => "All",
         };
-        state.set_user_section(chat_id, chosen);
-        let _ = state.save(&ctx.state_path);
+        let _ = ctx.store.update(|s| s.set_user_section(chat_id, chosen));
     }
 
     let (sched, state) = match ctx.load_active_schedule_for_chat(chat_id) {
@@ -1865,6 +2009,8 @@ pub async fn handle_callback_query(
         "day_tue" => render_routine_day(&sched, DayOfWeek::Tue),
         "day_wed" => render_routine_day(&sched, DayOfWeek::Wed),
         "day_thu" => render_routine_day(&sched, DayOfWeek::Thu),
+        "day_fri" => render_routine_day(&sched, DayOfWeek::Fri),
+        "day_sat" => render_routine_day(&sched, DayOfWeek::Sat),
         _ => return Ok(()),
     };
 
@@ -1986,12 +2132,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let state_path = temp_dir.path().join("state.json");
 
-        let ctx = BotContext {
+        let ctx = BotContext::new(
             routine_path,
-            state_path: state_path.clone(),
-            section: Some("B2".to_string()),
-            no_http: true,
-        };
+            state_path.clone(),
+            Some("B2".to_string()),
+            true,
+        )
+        .unwrap();
 
         // 1. Initial load with section B2
         let (sched, state) = ctx.load_active_schedule().expect("Failed to load schedule");
@@ -2000,9 +2147,7 @@ mod tests {
         let initial_count = sched.entries.len();
 
         // 2. Drop a course (which has 2 weekly class sessions)
-        let mut state_to_save = state;
-        assert!(state_to_save.drop_course("CSE-4101"));
-        state_to_save.save(&state_path).unwrap();
+        assert!(ctx.store.update(|s| s.drop_course("CSE-4101")).unwrap());
 
         // 3. Reload schedule and verify course is excluded
         let (filtered_sched, _) = ctx.load_active_schedule().unwrap();
@@ -2010,9 +2155,7 @@ mod tests {
         assert!(filtered_sched.entries.len() < initial_count);
 
         // 4. Restore the course using space-separated format
-        let mut state_to_restore = RoutineState::load_or_default(&state_path).unwrap();
-        assert!(state_to_restore.restore_course("cse 4101"));
-        state_to_restore.save(&state_path).unwrap();
+        assert!(ctx.store.update(|s| s.restore_course("cse 4101")).unwrap());
 
         // 5. Reload and verify restored
         let (restored_sched, _) = ctx.load_active_schedule().unwrap();

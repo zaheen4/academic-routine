@@ -63,27 +63,27 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
     if admin_chat_id > 0 {
         // Inspect Telegram handle on startup to cache into routine_state.json
         let info_bot = bot.clone();
-        let state_file = shared_ctx.state_path.clone();
+        let info_ctx = Arc::clone(&shared_ctx);
         tokio::spawn(async move {
-            if let Ok(chat) = info_bot.get_chat(teloxide::types::ChatId(admin_chat_id)).await {
+            if let Ok(chat) = info_bot
+                .get_chat(teloxide::types::ChatId(admin_chat_id))
+                .await
+            {
                 let handle = chat
                     .username()
                     .map(|u| format!("@{u}"))
                     .or_else(|| chat.first_name().map(|n| n.to_string()));
                 if let Some(h) = handle {
-                    let mut state =
-                        crate::model::state::RoutineState::load_or_default(&state_file)
-                            .unwrap_or_default();
-                    if state.telegram_username.as_deref() != Some(&h) {
-                        state.telegram_username = Some(h.clone());
-                        let _ = state.save(&state_file);
-                    }
+                    let _ = info_ctx.store.update(|state| {
+                        if state.telegram_username.as_deref() != Some(&h) {
+                            state.telegram_username = Some(h.clone());
+                        }
+                    });
                 }
             }
         });
 
-        let state = crate::model::state::RoutineState::load_or_default(&shared_ctx.state_path)
-            .unwrap_or_default();
+        let state = shared_ctx.store.read();
         let user_info = state
             .telegram_username
             .as_deref()
@@ -107,9 +107,20 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
                             tokio::spawn(async move {
                                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                                 let mut buf = [0u8; 512];
-                                let _ = stream.read(&mut buf).await;
-                                let resp = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 16\r\nConnection: close\r\n\r\nBot is healthy!\n";
-                                let _ = stream.write_all(resp).await;
+                                let n = stream.read(&mut buf).await.unwrap_or(0);
+                                let req = String::from_utf8_lossy(&buf[..n]);
+                                let (status, body) = if req.starts_with("GET / ")
+                                    || req.starts_with("GET /health")
+                                {
+                                    ("200 OK", "Bot is healthy!\n")
+                                } else {
+                                    ("404 Not Found", "Not Found\n")
+                                };
+                                let resp = format!(
+                                    "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                    body.len()
+                                );
+                                let _ = stream.write_all(resp.as_bytes()).await;
                             });
                         }
                     }
@@ -144,38 +155,39 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
         .branch(
             Update::filter_message()
                 .filter_command::<Command>()
-                .endpoint(|bot: Bot, msg: Message, cmd: Command, ctx: Arc<BotContext>| async move {
-                    let sender = msg
-                        .from
-                        .as_ref()
-                        .map(|u| u.first_name.clone())
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    println!(
-                        "📩 Received command: {:?} from {} (Chat ID: {})",
-                        cmd, sender, msg.chat.id
-                    );
-                    let res = handle_command(bot, msg, cmd, ctx).await;
-                    if let Err(ref e) = res {
-                        eprintln!("❌ Telegram API error: {e:?}");
-                    } else {
-                        println!("✅ Successfully replied to command.");
-                    }
-                    res
-                }),
+                .endpoint(
+                    |bot: Bot, msg: Message, cmd: Command, ctx: Arc<BotContext>| async move {
+                        let sender = msg
+                            .from
+                            .as_ref()
+                            .map(|u| u.first_name.clone())
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        println!(
+                            "📩 Received command: {:?} from {} (Chat ID: {})",
+                            cmd, sender, msg.chat.id
+                        );
+                        let res = handle_command(bot, msg, cmd, ctx).await;
+                        if let Err(ref e) = res {
+                            eprintln!("❌ Telegram API error: {e:?}");
+                        } else {
+                            println!("✅ Successfully replied to command.");
+                        }
+                        res
+                    },
+                ),
         )
-        .branch(
-            Update::filter_callback_query()
-                .endpoint(|bot: Bot, q: CallbackQuery, ctx: Arc<BotContext>| async move {
-                    let sender = &q.from.first_name;
-                    let data = q.data.as_deref().unwrap_or("none");
-                    println!("🔘 Received button callback '{data}' from {sender}");
-                    let res = handle_callback_query(bot, q, ctx).await;
-                    if let Err(ref e) = res {
-                        eprintln!("❌ Callback handling error: {e:?}");
-                    }
-                    res
-                }),
-        );
+        .branch(Update::filter_callback_query().endpoint(
+            |bot: Bot, q: CallbackQuery, ctx: Arc<BotContext>| async move {
+                let sender = &q.from.first_name;
+                let data = q.data.as_deref().unwrap_or("none");
+                println!("🔘 Received button callback '{data}' from {sender}");
+                let res = handle_callback_query(bot, q, ctx).await;
+                if let Err(ref e) = res {
+                    eprintln!("❌ Callback handling error: {e:?}");
+                }
+                res
+            },
+        ));
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![Arc::clone(&shared_ctx)])

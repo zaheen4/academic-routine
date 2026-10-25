@@ -56,18 +56,35 @@ pub fn next_keyboard() -> InlineKeyboardMarkup {
 }
 
 /// Builds day-switcher buttons for the weekly routine view.
-/// Weekdays are strictly emojiless.
+/// Weekdays are strictly emojiless. Includes Friday and Saturday (L-08).
 #[must_use]
 pub fn routine_days_keyboard(active_day: Option<DayOfWeek>) -> InlineKeyboardMarkup {
-    let days = [
+    let row1_days = [
+        (DayOfWeek::Sat, "Sat", "day_sat"),
         (DayOfWeek::Sun, "Sun", "day_sun"),
         (DayOfWeek::Mon, "Mon", "day_mon"),
         (DayOfWeek::Tue, "Tue", "day_tue"),
-        (DayOfWeek::Wed, "Wed", "day_wed"),
-        (DayOfWeek::Thu, "Thu", "day_thu"),
     ];
 
-    let row1 = days
+    let row2_days = [
+        (DayOfWeek::Wed, "Wed", "day_wed"),
+        (DayOfWeek::Thu, "Thu", "day_thu"),
+        (DayOfWeek::Fri, "Fri", "day_fri"),
+    ];
+
+    let row1 = row1_days
+        .into_iter()
+        .map(|(day, label, cb)| {
+            let text = if Some(day) == active_day {
+                format!("❯ {label} ❮")
+            } else {
+                label.to_string()
+            };
+            InlineKeyboardButton::callback(text, cb)
+        })
+        .collect();
+
+    let row2 = row2_days
         .into_iter()
         .map(|(day, label, cb)| {
             let text = if Some(day) == active_day {
@@ -85,24 +102,24 @@ pub fn routine_days_keyboard(active_day: Option<DayOfWeek>) -> InlineKeyboardMar
         "📋 Overview"
     };
 
-    let row2 = vec![
+    let row3 = vec![
         InlineKeyboardButton::callback(overview_label, "day_all"),
         InlineKeyboardButton::callback("📅 Today", "nav_today"),
     ];
 
-    InlineKeyboardMarkup::new(vec![row1, row2])
+    InlineKeyboardMarkup::new(vec![row1, row2, row3])
 }
 
 /// Builds 1-tap contact buttons for a faculty profile card.
 #[must_use]
-pub fn teacher_contact_keyboard(
-    phone: Option<&str>,
-    email: Option<&str>,
-) -> InlineKeyboardMarkup {
+pub fn teacher_contact_keyboard(phone: Option<&str>, email: Option<&str>) -> InlineKeyboardMarkup {
     let mut row1 = Vec::new();
 
     if let Some(p) = phone {
-        let clean_phone: String = p.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+        let clean_phone: String = p
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '+')
+            .collect();
         if !clean_phone.is_empty() {
             if let Ok(url) = Url::parse(&format!("tel:{clean_phone}")) {
                 row1.push(InlineKeyboardButton::url("📞 Call", url));
