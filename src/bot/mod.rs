@@ -4,7 +4,9 @@ pub mod handlers;
 pub mod keyboards;
 pub mod scheduler;
 
-pub use handlers::{handle_callback_query, handle_command, BotContext, Command};
+pub use handlers::{
+    check_attendance_code, handle_callback_query, handle_command, BotContext, Command,
+};
 pub use scheduler::{start_class_reminder_daemon, start_morning_scheduler};
 
 use std::sync::Arc;

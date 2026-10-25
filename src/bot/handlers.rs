@@ -10,7 +10,7 @@ use crate::model::state::{
     codes_match, AttendanceRecord, AttendanceStatus, RoutineState, StateError, StateStore,
 };
 use chrono::Timelike;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::{CallbackQuery, InlineKeyboardMarkup, ParseMode};
@@ -183,7 +183,29 @@ impl BotContext {
     pub fn load_active_schedule(&self) -> Result<(Schedule, RoutineState), String> {
         self.load_active_schedule_for_chat(0)
     }
+}
 
+/// Returns `Ok(())` when the code is acceptable, `Err(valid_codes)` when it should be refused,
+/// and never blocks recording when the routine itself cannot be read.
+pub fn check_attendance_code(routine_path: &Path, code: &str) -> Result<(), String> {
+    match load_routine_file(routine_path) {
+        Ok(raw) if raw.entries.iter().any(|e| codes_match(&e.code, code)) => Ok(()),
+        Ok(raw) => {
+            let valid_codes = raw
+                .all_course_codes()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(valid_codes)
+        }
+        Err(error) => {
+            eprintln!("⚠️ Attendance recorded without routine validation: {error}");
+            Ok(())
+        }
+    }
+}
+
+impl BotContext {
     /// Resolves the .ics file path, prioritizing output/routine.ics if it exists or by default.
     pub fn resolve_ics_path(&self) -> PathBuf {
         let output_ics = PathBuf::from("output/routine.ics");
@@ -1148,21 +1170,7 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
-                Ok(res) => res,
-                Err(e) => {
-                    bot.send_message(chat_id, format!("❌ {e}")).await?;
-                    return Ok(());
-                }
-            };
-
-            // Validate code against active schedule (L-07)
-            if !sched.entries.iter().any(|e| codes_match(&e.code, &clean)) {
-                let valid_codes = sched
-                    .all_course_codes()
-                    .into_iter()
-                    .collect::<Vec<_>>()
-                    .join(", ");
+            if let Err(valid_codes) = check_attendance_code(&ctx.routine_path, &clean) {
                 bot.send_message(
                     chat_id,
                     format!(
@@ -1226,21 +1234,7 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let (sched, _) = match ctx.load_active_schedule_for_chat(chat_id.0) {
-                Ok(res) => res,
-                Err(e) => {
-                    bot.send_message(chat_id, format!("❌ {e}")).await?;
-                    return Ok(());
-                }
-            };
-
-            // Validate code against active schedule (L-07)
-            if !sched.entries.iter().any(|e| codes_match(&e.code, &clean)) {
-                let valid_codes = sched
-                    .all_course_codes()
-                    .into_iter()
-                    .collect::<Vec<_>>()
-                    .join(", ");
+            if let Err(valid_codes) = check_attendance_code(&ctx.routine_path, &clean) {
                 bot.send_message(
                     chat_id,
                     format!(
@@ -2051,6 +2045,7 @@ pub fn escape_html(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_escape_html() {
@@ -2161,5 +2156,50 @@ mod tests {
         let (restored_sched, _) = ctx.load_active_schedule().unwrap();
         assert_eq!(restored_sched.entries.len(), initial_count);
         assert!(restored_sched.all_course_codes().contains("CSE-4101"));
+    }
+
+    #[test]
+    fn test_check_attendance_code() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let routine_path = temp_dir.path().join("routine.json");
+        let sample_json = r#"{
+            "semester": "Summer 2026",
+            "entries": [
+                {
+                    "CourseCode": "CSE-4101",
+                    "CourseTitle": "Software Engineering",
+                    "Section": "B",
+                    "Day": "Sunday",
+                    "Room": "Room 612",
+                    "TimeSlot": "08:30 AM - 10:00 AM",
+                    "Teacher": "Mir Zaheen Waseet (MZW)"
+                },
+                {
+                    "CourseCode": "CSE-4102",
+                    "CourseTitle": "Compiler Design Lab",
+                    "Section": "B2",
+                    "Day": "Monday",
+                    "Room": "Room 614",
+                    "TimeSlot": "10:00 AM - 01:00 PM",
+                    "Teacher": "Prof. Smith (PS)"
+                }
+            ]
+        }"#;
+        fs::write(&routine_path, sample_json).unwrap();
+
+        // 1. Code present in routine but absent from B1 section filter -> Ok
+        assert_eq!(check_attendance_code(&routine_path, "CSE-4102"), Ok(()));
+
+        // 2. Code belonging to a dropped course -> Ok (routine still has it)
+        assert_eq!(check_attendance_code(&routine_path, "CSE-4101"), Ok(()));
+
+        // 3. Code absent from full routine -> Err mentioning valid codes
+        let err = check_attendance_code(&routine_path, "CSE-9999").unwrap_err();
+        assert!(err.contains("CSE-4101"));
+        assert!(err.contains("CSE-4102"));
+
+        // 4. Routine path missing -> Ok (records with warning, does not fail)
+        let missing_path = temp_dir.path().join("nonexistent_routine.json");
+        assert_eq!(check_attendance_code(&missing_path, "CSE-9999"), Ok(()));
     }
 }
