@@ -14,6 +14,18 @@ const LEGACY_STATE_FILENAME: &str = "routine_state.json";
 
 const USER_AGENT: &str = concat!("academic-routine-engine/", env!("CARGO_PKG_VERSION"));
 
+/// Builds the PATCH payload used to retry after a `422 Unprocessable Entity`.
+///
+/// GitHub rejects a PATCH that deletes a file the Gist does not contain, so the
+/// `routine_state.json: null` entry is stripped before the retry. Returns `None`
+/// when the bundle has no legacy deletion key, in which case a retry would send
+/// the same request again.
+fn retry_payload_without_legacy(files: &serde_json::Value) -> Option<serde_json::Value> {
+    let mut retry = files.as_object()?.clone();
+    retry.remove(LEGACY_STATE_FILENAME)?;
+    Some(serde_json::json!({ "files": retry }))
+}
+
 /// Resolves a GitHub token from the environment or the `gh` CLI.
 fn resolve_github_token() -> Option<String> {
     std::env::var("GITHUB_TOKEN")
@@ -99,31 +111,27 @@ pub async fn sync_gist_bundle(
     if let Some(token) = resolve_github_token() {
         let client = reqwest::Client::new();
         let url = format!("https://api.github.com/gists/{gist_id}");
-        let mut patch_files = files.clone();
         let mut response = client
             .patch(&url)
             .header("Authorization", format!("Bearer {}", token.trim()))
             .header("User-Agent", USER_AGENT)
             .header("Accept", "application/vnd.github+json")
-            .json(&serde_json::json!({ "files": patch_files }))
+            .json(&serde_json::json!({ "files": files }))
             .send()
             .await
             .map_err(|e| format!("GitHub API network error: {e}"))?;
 
-        // If the target Gist does not have routine_state.json, GitHub returns 422 Unprocessable Entity
-        // for deleting a non-existent file. Retry without the null deletion key.
-        if !response.status().is_success()
-            && response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY
-            && patch_files.get(LEGACY_STATE_FILENAME).is_some()
-        {
-            if let Some(map) = patch_files.as_object_mut() {
-                map.remove(LEGACY_STATE_FILENAME);
+        // GitHub returns 422 Unprocessable Entity when the Gist does not contain the legacy
+        // `routine_state.json` that the bundle asks to delete. Retry without that key; the file
+        // being absent is already the desired end state.
+        if response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            if let Some(payload) = retry_payload_without_legacy(&files) {
                 response = client
                     .patch(&url)
                     .header("Authorization", format!("Bearer {}", token.trim()))
                     .header("User-Agent", USER_AGENT)
                     .header("Accept", "application/vnd.github+json")
-                    .json(&serde_json::json!({ "files": map }))
+                    .json(&payload)
                     .send()
                     .await
                     .map_err(|e| format!("GitHub API network error: {e}"))?;
@@ -455,6 +463,43 @@ mod tests {
         assert!(names.contains(&&"routine_state.json".to_string()));
         assert_eq!(object.len(), 4);
         assert!(object.get("routine_state.json").unwrap().is_null());
+    }
+
+    #[test]
+    fn test_retry_payload_drops_only_the_legacy_deletion() {
+        let files = build_bundle_files(
+            "routine.ics",
+            "BEGIN:VCALENDAR",
+            "routine_data.json",
+            "{}",
+            &sample_meta(),
+        );
+
+        let payload = retry_payload_without_legacy(&files).expect("legacy key is present");
+        let retried = payload["files"].as_object().unwrap();
+        assert!(!retried.contains_key("routine_state.json"));
+        assert!(retried.contains_key("routine.ics"));
+        assert!(retried.contains_key("routine_data.json"));
+        assert!(retried.contains_key("routine_meta.json"));
+        assert_eq!(retried.len(), 3);
+
+        // The first attempt must still ask for the deletion.
+        assert!(files["routine_state.json"].is_null());
+    }
+
+    #[test]
+    fn test_retry_payload_is_none_without_legacy_key() {
+        let mut files = build_bundle_files(
+            "routine.ics",
+            "BEGIN:VCALENDAR",
+            "routine_data.json",
+            "{}",
+            &sample_meta(),
+        );
+        files.as_object_mut().unwrap().remove("routine_state.json");
+
+        assert!(retry_payload_without_legacy(&files).is_none());
+        assert!(retry_payload_without_legacy(&serde_json::json!([])).is_none());
     }
 
     #[test]
