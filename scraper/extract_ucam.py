@@ -872,26 +872,50 @@ async def extract_account_routine(
         logger.info("[%s] Synchronized semester: %s", acc_id, semester_name)
 
         # The report viewer re-renders the fixed table after the semester postback.
-        await wait_for_js(
-            tab,
-            '(() => {'
-            '  const t = document.getElementById("ctl00_MainContainer_ReportViewer1_fixedTable");'
-            '  return !!t && t.querySelectorAll("tr").length > 1;'
-            '})()',
-            description='routine table rows ("#ctl00_MainContainer_ReportViewer1_fixedTable tr")',
-            timeout=45,
-            acc_id=acc_id,
-        )
+        # Its chrome (toolbar, pager) already contributes rows, so waiting on "tr"
+        # alone returns before the report body exists and yields an empty parse.
+        # Wait instead for a cell whose text is a weekday.
+        try:
+            await wait_for_js(
+                tab,
+                '(() => {'
+                '  const t = document.getElementById("ctl00_MainContainer_ReportViewer1_fixedTable");'
+                '  if (!t) return false;'
+                '  return Array.from(t.querySelectorAll("td"))'
+                '    .some(td => /^(sat|sun|mon|tue|wed|thu|fri)$/i.test((td.textContent || "").trim()));'
+                '})()',
+                description="routine table report rows (weekday cell)",
+                timeout=45,
+                acc_id=acc_id,
+            )
+        except TimeoutError:
+            # A semester with no published routine legitimately renders no rows;
+            # parsing then returns nothing and the caller decides what to do.
+            logger.warning(
+                "[%s] No weekday rows appeared in the routine report table.", acc_id
+            )
 
-        # Retrieve table HTML
-        report_html = await tab.evaluate("""
-            (() => {
-                const reportTable = document.getElementById("ctl00_MainContainer_ReportViewer1_fixedTable");
-                return reportTable ? reportTable.outerHTML : document.body.innerHTML;
-            })()
-        """)
+        # Retrieve table HTML, re-reading if the postback is still settling.
+        report_html = ""
+        entries: list[dict] = []
+        for attempt in range(1, 4):
+            report_html = await tab.evaluate("""
+                (() => {
+                    const reportTable = document.getElementById("ctl00_MainContainer_ReportViewer1_fixedTable");
+                    return reportTable ? reportTable.outerHTML : document.body.innerHTML;
+                })()
+            """)
+            entries = parse_report_html(report_html, default_section=sec_label)
+            if entries:
+                break
+            if attempt < 3:
+                logger.warning(
+                    "[%s] Report table had no parseable rows (attempt %d/3); re-reading.",
+                    acc_id,
+                    attempt,
+                )
+                await asyncio.sleep(3)
 
-        entries = parse_report_html(report_html, default_section=sec_label)
         logger.info("[%s] Successfully extracted %d class entries.", acc_id, len(entries))
 
         # Attempt to extract official attendance dashboard (primary account only)
