@@ -2,6 +2,7 @@
 name = "academic-routine"
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.89"
 authors = ["Mir Zaheen Waseet <zwaseet@gmail.com>"]
 description = "A fast academic schedule engine, .ics calendar synchronizer, and Telegram assistant"
 license = "MIT"
@@ -22,7 +23,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 comfy-table = "8.0"
 crossterm = "0.29"
-colored = "2.1"
+colored = "3.1"
 teloxide = { version = "0.17", features = ["macros"] }
 tokio = { version = "1.40", features = ["full"] }
 dotenvy = "0.15"
