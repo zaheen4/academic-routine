@@ -1,5 +1,5 @@
 # Multi-stage Docker build for standalone container deployment
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1.98-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy uv binary from official pinned image for fast, deterministic dependency management
-COPY --from=ghcr.io/astral-sh/uv:0.5.26 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /bin/uv
 
 # Create non-root application user
 RUN useradd -m -u 1000 app && mkdir -p /app/output && chown -R app:app /app
