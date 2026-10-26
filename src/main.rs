@@ -421,6 +421,10 @@ async fn main() {
                         "academic-routine vacation on".cyan(),
                         "academic-routine vacation off".cyan()
                     );
+                    println!(
+                        "   Add '{}' to resume automatically on a given date.",
+                        "--until YYYY-MM-DD".cyan()
+                    );
                 }
             }
             return;

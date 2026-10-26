@@ -1250,7 +1250,7 @@ mod tests {
         let legacy_json = r#"{
             "semester_name": "Summer 2024",
             "semester_end_date": null,
-            "gist_id": "4a7e24f1f95a405673ae900e9838f3fd",
+            "gist_id": "0123456789abcdef0123456789abcdef",
             "dropped_courses": ["CSE-4125"],
             "telegram_username": "@legacy",
             "user_sections": {"123": "B2"}

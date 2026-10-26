@@ -96,12 +96,12 @@ pub enum Commands {
     /// Display complete subsystem status, active routine, vacation mode, and integration health
     Status,
 
-    /// Manage vacation / semester break mode (e.g. 'vacation on', 'vacation off', 'vacation until 2026-11-15')
+    /// Manage vacation / semester break mode (e.g. 'vacation on --until 2026-11-15', 'vacation off')
     Vacation {
-        /// Action to perform: 'on', 'off', 'status', or 'until'
+        /// Action to perform: 'on', 'off', or 'status'
         action: Option<String>,
 
-        /// Auto-expiration date if action is 'until' (format: YYYY-MM-DD)
+        /// Auto-expiration date applied when activating with 'on' (format: YYYY-MM-DD)
         #[arg(long)]
         until: Option<String>,
     },
@@ -151,7 +151,7 @@ pub enum Commands {
 
     /// Link a GitHub Gist ID for automatic live calendar sync
     SetGist {
-        /// Gist ID (e.g. '4a7e24f1f95a405673ae900e9838f3fd')
+        /// Gist ID (e.g. '0123456789abcdef0123456789abcdef')
         id: String,
     },
 
