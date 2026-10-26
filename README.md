@@ -258,6 +258,23 @@ Pre-configured user-level service and timer units are provided in `deployment/`:
 - `academic-routine.service`: Runs the Telegram bot daemon and 6:00 AM briefing scheduler with automatic restart.
 - `academic-routine-sync.timer`: Automatically executes weekly routine scraping every Saturday at 8:00 PM.
 
+The units hardcode three paths, so set them up before enabling the units (see [Prerequisites](#prerequisites) for the toolchain):
+
+```bash
+# Clone to the directory the units use as WorkingDirectory
+git clone https://github.com/zaheen4/academic-routine.git ~/academic-routine
+cd ~/academic-routine
+
+# Binary the units execute: %h/.cargo/bin/academic-routine
+cargo install --path . --locked
+
+# Python dependencies for the weekly sync unit (.venv/bin/python is preferred)
+uv sync
+
+# Credentials read via EnvironmentFile=-%h/academic-routine/.env
+cp .env.example .env
+```
+
 ```bash
 # Copy systemd units to user services directory
 mkdir -p ~/.config/systemd/user
