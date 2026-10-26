@@ -279,6 +279,19 @@ The bot includes an embedded HTTP health check server listening on `PORT` (`GET 
 
 ---
 
+## Upgrading
+
+### From v0.2.x to v0.3.0
+
+The state file schema moves to `schema_version: 2`. It is upgraded in place the first time a v0.3 binary opens it, and the previous copy is kept as `routine_state.json.bak`.
+
+- **Upgrade the daemon and the sync timer together.** A binary older than the on-disk schema refuses to start by design, so upgrading one unit at a time leaves the other failing until it is updated.
+- **Back up the state file first** if it matters to you: `cp output/routine_state.json output/routine_state.json.pre-v0.3`.
+- **`--file` is now strict.** Read commands (`today`, `week`, `diff`, `status`, `sync-gsheet`, `sync-gist`, `bot`) reject an explicit path that does not exist instead of silently falling back to `output/routine_data.json`. Drop the flag to keep the fallback behaviour.
+- **`ADMIN_CHAT_ID` is honoured everywhere**, including `status` and the daemon, and takes precedence over `TELEGRAM_CHAT_ID`.
+
+---
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
