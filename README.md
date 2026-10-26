@@ -35,7 +35,7 @@ flowchart TD
     end
 
     subgraph Scraping ["Automated Ingestion"]
-        Worker["Headless Playwright Scraper: Stealth and Session Rotation"]:::scraper
+        Worker["Headless nodriver Scraper: CDP Stealth and Session Rotation"]:::scraper
     end
 
     subgraph Engine ["Rust Core Processing Engine"]
@@ -99,7 +99,10 @@ flowchart TD
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
+| `/start` | — | Launch the assistant and show the weekly routine overview. |
+| `/help` | — | Command reference and inline keyboard shortcuts. |
 | `/today` | — | Today's classes, room allocations, instructor info, and active session status. |
+| `/tomorrow` | — | Tomorrow's class schedule with rooms and instructors. |
 | `/next` | — | Countdown timer to the immediate next class session. |
 | `/routine` | — | Interactive weekly timetable with individual day navigation buttons. |
 | `/section` | `[B1 / B2 / All]` | Set or inspect your personalized student section. |
@@ -109,15 +112,19 @@ flowchart TD
 | `/miss` | `<CODE>` | Mark a class session as missed or bunked. |
 | `/attendance set`| `<CODE> <ATT> <MIS>`| Set exact attended and missed counts for a course. |
 | `/teacher` | `<NAME / CODE>` | Search faculty directory with phone and email action buttons. |
+| `/teachers` | — | List every instructor in the directory with contact actions. |
 | `/calendar` | — | Live calendar subscription card for Apple and Google Calendar sync. |
 | `/alerts` | `[on / off]` | Toggle 6:00 AM daily morning briefings (active by default). |
 | `/reminders` | `[on / off]` | Toggle 30-minute pre-class reminders (opt-in). |
 | `/free` | — | Calculate free periods, study windows, and break durations. |
 | `/complete` | `<CODE>` | Mark completed courses (hides from alerts and calendar feeds). |
+| `/completed` | — | List courses currently marked as completed. |
 | `/resume` | `<CODE>` | Restore a completed or dropped course to your active routine. |
-| `/vacation` | `[on / off / until]` | Manage vacation mode to pause morning alerts during breaks. |
-| `/sync` | — | Pull latest routine updates from GitHub Gist or UCAM portal. |
+| `/vacation` | `[on / off / until YYYY-MM-DD]` | Pause briefings and reminders; `until` auto-resumes after that date (owner only). |
+| `/sync` | — | Pull latest routine updates from GitHub Gist or UCAM portal (owner only). |
 | `/status` | — | View system health, active section, vacation state, and alert preferences. |
+
+Aliases are registered but hidden from the menu: `/week`, `/finish`, `/finished`, `/drop`, `/restore`, `/dropped`, `/bunk`, `/present`, and `/absent`.
 
 ---
 
@@ -159,34 +166,58 @@ Rather than static `.ics` file downloads that become stale when rooms change, th
 ## Command-Line Interface (CLI)
 
 ```bash
-# Display today's schedule and live session status
+# Global flags: --file <PATH> selects an explicit routine JSON, --section <B1|B2|...> filters it
+
+# Daily views
 academic-routine today
+academic-routine next
+academic-routine view                    # full week
+academic-routine view --day Mon          # single day
+academic-routine --section B2 today
 
-# View full weekly timetable for a specific section
-academic-routine --section B2 view
-
-# Inspect schedule differences against previous baseline
+# Schedule auditing
 academic-routine diff output/routine_data.prev.json output/routine_data.json
+academic-routine conflicts
 
-# Export RFC 5545 iCalendar with 30-min alarms and sync to Gist
+# Faculty directory
+academic-routine teachers
+academic-routine teacher basar
+
+# Attendance state and course lifecycle
+academic-routine status
+academic-routine complete CSE-4125       # alias: drop
+academic-routine resume CSE-4125         # alias: restore
+academic-routine completed               # alias: dropped
+
+# Semester switches
+academic-routine vacation on --until 2026-11-15
+academic-routine alerts off
+academic-routine pause gist              # pause | unpause: alerts | gist | gsheet | all
+academic-routine timer status            # status | pause | resume | run
+
+# Calendar export and publication
 academic-routine export --ics output/routine.ics --sync-gist
+academic-routine export --until 2026-12-31 --include-all
+academic-routine set-gist <GIST_ID>
+academic-routine sync-gist
 
-# Run headless UCAM scraper on local machine
-academic-routine sync-ucam
-
-# Synchronize routine grid to Google Spreadsheet
+# Scraping and spreadsheet sync
+academic-routine sync-ucam               # --force re-scrapes, --local-only skips publishing
 academic-routine sync-gsheet
 
-# Launch Telegram Assistant Bot with embedded HTTP health check server
+# Telegram assistant with embedded HTTP health-check server (--no-http to disable)
 academic-routine bot
 ```
+
+> [!NOTE]
+> On read commands, `--file` is strict: a path that does not exist is an error rather than a silent fallback to `output/routine_data.json`. Omit the flag to keep the `output/` → repository-root search order.
 
 ---
 
 ## Local Development & Setup
 
 ### Prerequisites
-- [Rust](https://www.rust-lang.org/tools/install) (2021 edition)
+- [Rust](https://www.rust-lang.org/tools/install) 1.89+ (2021 edition, declared as `rust-version` in `Cargo.toml`)
 - [Python 3.10+](https://www.python.org/) with `uv` (`uv sync`)
 - System Chromium or Google Chrome with `xvfb-run` (for offscreen headless scraping on Linux)
 
@@ -201,10 +232,19 @@ cp .env.example .env
 | :--- | :--- |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot API token from @BotFather (`TELOXIDE_TOKEN` also supported) |
 | `ADMIN_CHAT_ID` | Numeric Telegram user ID of owner for admin gate & notifications (`TELEGRAM_CHAT_ID` fallback) |
+| `TELEGRAM_USERNAME` | Optional owner handle shown in `status` and alert lines when Telegram does not supply one |
 | `DEFAULT_SECTION` | Default section filter (e.g. `B2`, `B1`, or `All`) |
 | `GITHUB_TOKEN` | GitHub Personal Access Token with `gist` scope (`GH_TOKEN` also supported) |
 | `GIST_ID` | GitHub Gist ID for public routine and calendar feed distribution |
-| `PORT` | Health check server port (defaults to 8000; set `PORT=0` or `DISABLE_HTTP_HEALTHCHECK=1` to disable) |
+| `ROUTINE_TIMEZONE_OFFSET` | Local timezone offset in hours from UTC (defaults to `6`, Asia/Dhaka) |
+| `PORT` | Health check server port (defaults to 8000) |
+| `DISABLE_HTTP_HEALTHCHECK` | Set to `1` to skip the embedded health check server instead of using `PORT=0` |
+| `SPREADSHEET_NAME` | Target Google Spreadsheet for `sync-gsheet` (default `CSE-03_B_ClassRoutine`) |
+| `GOOGLE_SERVICE_ACCOUNT_KEY` | Path to the Google service-account JSON key used for Sheets sync |
+| `UCAM_ACCOUNTS` | JSON array of UCAM portal accounts (`id`, `username`, `password`, `section_label`) read by the scraper |
+
+> [!IMPORTANT]
+> `UCAM_ACCOUNTS` holds raw university portal passwords. Keep it in `.env` (already git-ignored) and never in the repository, a Gist, or a shell history file.
 
 > [!NOTE]
 > **State Architecture & Local Isolation**:
@@ -225,9 +265,11 @@ Check code formatting and lints:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets
+cargo clippy --all-targets -- -D warnings
 uv run ruff check scraper
 ```
+
+CI (`.github/workflows/ci.yml`) runs these same commands plus both test suites on every push and pull request to `main`.
 
 ---
 
