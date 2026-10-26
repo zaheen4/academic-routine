@@ -336,7 +336,7 @@ pub fn render_today_card(sched: &Schedule, state: &RoutineState) -> (String, Inl
     let now = academic_now().time();
 
     let vacation_banner = if state.is_vacation_active() {
-        "🏖️ <b>Vacation Mode Active (Semester Break)</b>\n<i>No official routine classes scheduled. Send /vacation off to resume normal alerts.</i>\n\n"
+        "🏖️ <b>Vacation Mode Active (Semester Break)</b>\n<i>Official class routines are currently paused.</i>\n\n"
     } else {
         ""
     };
@@ -400,7 +400,7 @@ pub fn render_today_card(sched: &Schedule, state: &RoutineState) -> (String, Inl
 pub fn render_next_card(sched: &Schedule, state: &RoutineState) -> (String, InlineKeyboardMarkup) {
     if state.is_vacation_active() {
         let text = format!(
-            "🏖️ <b>Vacation Mode Active (Semester Break)</b>\nNo classes are currently scheduled. Send <code>/vacation off</code> when classes resume.\n───────────────────────────\n{}",
+            "🏖️ <b>Vacation Mode Active (Semester Break)</b>\nOfficial class routines are currently paused.\n───────────────────────────\n{}",
             live_timestamp()
         );
         return (text, next_keyboard());
@@ -746,29 +746,30 @@ pub fn render_status_card(
     state: &RoutineState,
     chat_id: ChatId,
 ) -> (String, InlineKeyboardMarkup) {
-    let user_display = state
-        .owner_username
-        .as_deref()
-        .map(|u| format!("{u} [Chat {chat_id}]"))
-        .unwrap_or_else(|| format!("Chat {chat_id}"));
-
     let vacation_str = if state.is_vacation_active() {
         if let Some(ref until) = state.vacation_until {
-            format!("🏖️ <b>ACTIVE</b> (until {until})")
+            format!("🏖️ <b>ACTIVE</b> (Semester Break until {until})")
         } else {
             "🏖️ <b>ACTIVE</b> (Semester Break)".to_string()
+        }
+    } else if state.is_user_vacation_active(chat_id.0) {
+        if let Some(Some(ref until)) = state.get_user_vacation_until(chat_id.0) {
+            format!("🏖️ <b>ACTIVE</b> (Personal until {until})")
+        } else {
+            "🏖️ <b>ACTIVE</b> (Personal Break)".to_string()
         }
     } else {
         "<b>INACTIVE</b> (Normal Semester)".to_string()
     };
 
-    let alerts_str = if state.morning_alerts {
-        format!("🔔 <b>ENABLED</b> (06:00 AM to {user_display})")
+    let user_alerts_enabled = state.is_morning_alerts_enabled(chat_id.0) && state.morning_alerts;
+    let alerts_str = if user_alerts_enabled {
+        "🔔 <b>ACTIVE</b> (06:00 AM on class days)".to_string()
     } else {
-        "🔕 <b>PAUSED</b> (/alerts on to resume)".to_string()
+        "🔕 <b>PAUSED / MUTED</b> (/alerts on to resume)".to_string()
     };
 
-    let completed_count = state.dropped_courses.len();
+    let completed_count = state.dropped_for(chat_id.0).len();
     let gist_status = if let Some(ref gid) = state.gist_id {
         let short = &gid[..8.min(gid.len())];
         format!("Linked (<code>{short}...</code>)")
@@ -1693,89 +1694,184 @@ pub async fn handle_command(
         }
 
         Command::Vacation(param) => {
-            if !ctx.is_admin(from_id) {
-                bot.send_message(chat_id, "🔒 This command is restricted to the bot owner.")
-                    .await?;
-                return Ok(());
-            }
-
             let clean = param.trim();
             let lower = clean.to_lowercase();
+            let is_admin = ctx.is_admin(from_id);
 
-            if lower.starts_with("off") || lower.starts_with("resume") || lower.starts_with("stop")
-            {
-                let _ = ctx.store.update(|s| s.set_vacation(false, None));
-                let _ = ctx.regenerate_and_sync().await;
-                bot.send_message(
-                    chat_id,
-                    "🎒 <b>Welcome Back! Vacation Mode Deactivated.</b>\n\
-                     Normal class queries, countdowns, and 6:00 AM morning briefings are now active.",
-                )
-                .parse_mode(ParseMode::Html)
-                .await?;
-            } else if lower.starts_with("on") || lower.starts_with("start") {
-                let _ = ctx.store.update(|s| s.set_vacation(true, None));
-                let _ = ctx.regenerate_and_sync().await;
-                bot.send_message(
-                    chat_id,
-                    "🏖️ <b>Vacation / Semester Break Mode Activated!</b>\n\
-                     6:00 AM morning briefings and class alerts are paused.\n\n\
-                     <i>Send <code>/vacation off</code> when classes resume.</i>",
-                )
-                .parse_mode(ParseMode::Html)
-                .await?;
-            } else if lower.starts_with("until") {
-                let date_str = clean.trim_start_matches("until").trim();
-                match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                    Ok(until) => {
-                        let _ = ctx.store.update(|s| s.set_vacation(true, Some(until)));
-                        let _ = ctx.regenerate_and_sync().await;
-                        bot.send_message(
-                            chat_id,
-                            format!(
-                                "🏖️ <b>Vacation Mode Activated until {}!</b>\n\
-                                 Morning alerts and class reminders will automatically resume after this date.\n\n\
-                                 <i>Send <code>/vacation off</code> anytime to cancel early.</i>",
-                                until
-                            ),
-                        )
-                        .parse_mode(ParseMode::Html)
-                        .await?;
-                    }
-                    Err(_) => {
-                        bot.send_message(
-                            chat_id,
-                            "⚠️ Invalid date format. Use <code>YYYY-MM-DD</code> (e.g. <code>/vacation until 2026-11-15</code>).",
-                        )
-                        .parse_mode(ParseMode::Html)
-                        .await?;
-                    }
-                }
-            } else {
-                let state = ctx.store.read();
-                let status = if state.is_vacation_active() {
-                    if let Some(until) = state.vacation_until {
-                        format!("🏖️ <b>ACTIVE</b> (until {until})")
-                    } else {
-                        "🏖️ <b>ACTIVE</b> (Semester Break)".to_string()
+            if is_admin {
+                if lower.starts_with("off")
+                    || lower.starts_with("resume")
+                    || lower.starts_with("stop")
+                {
+                    let _ = ctx.store.update(|s| s.set_vacation(false, None));
+                    let _ = ctx.regenerate_and_sync().await;
+                    bot.send_message(
+                        chat_id,
+                        "🎒 <b>Welcome Back! Vacation Mode Deactivated.</b>\n\
+                         Normal class queries, countdowns, and 6:00 AM morning briefings are now active batch-wide.",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                } else if lower.starts_with("on") || lower.starts_with("start") {
+                    let _ = ctx.store.update(|s| s.set_vacation(true, None));
+                    let _ = ctx.regenerate_and_sync().await;
+                    bot.send_message(
+                        chat_id,
+                        "🏖️ <b>Vacation / Semester Break Mode Activated!</b>\n\
+                         6:00 AM morning briefings and class alerts are paused batch-wide.\n\n\
+                         <i>Send <code>/vacation off</code> when classes resume.</i>",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                } else if lower.starts_with("until") {
+                    let date_str = clean.trim_start_matches("until").trim();
+                    match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                        Ok(until) => {
+                            let _ = ctx.store.update(|s| s.set_vacation(true, Some(until)));
+                            let _ = ctx.regenerate_and_sync().await;
+                            bot.send_message(
+                                chat_id,
+                                format!(
+                                    "🏖️ <b>Vacation Mode Activated until {}!</b>\n\
+                                     Morning alerts and class reminders will automatically resume after this date batch-wide.\n\n\
+                                     <i>Send <code>/vacation off</code> anytime to cancel early.</i>",
+                                    until
+                                ),
+                            )
+                            .parse_mode(ParseMode::Html)
+                            .await?;
+                        }
+                        Err(_) => {
+                            bot.send_message(
+                                chat_id,
+                                "⚠️ Invalid date format. Use <code>YYYY-MM-DD</code> (e.g. <code>/vacation until 2026-11-15</code>).",
+                            )
+                            .parse_mode(ParseMode::Html)
+                            .await?;
+                        }
                     }
                 } else {
-                    "🎒 <b>INACTIVE</b> (Normal Semester)".to_string()
-                };
+                    let state = ctx.store.read();
+                    let status = if state.is_vacation_active() {
+                        if let Some(until) = state.vacation_until {
+                            format!("🏖️ <b>ACTIVE</b> (until {until})")
+                        } else {
+                            "🏖️ <b>ACTIVE</b> (Semester Break)".to_string()
+                        }
+                    } else {
+                        "🎒 <b>INACTIVE</b> (Normal Semester)".to_string()
+                    };
 
-                bot.send_message(
-                    chat_id,
-                    format!(
-                        "🏖️ <b>Vacation / Semester Break Mode</b>\n\n\
-                         Status: {}\n\n\
-                         • Send <code>/vacation on</code> to pause all class alerts.\n\
-                         • Send <code>/vacation until YYYY-MM-DD</code> to pause until a date.\n\
-                         • Send <code>/vacation off</code> to resume normal classes.",
-                        status
-                    ),
-                )
-                .parse_mode(ParseMode::Html)
-                .await?;
+                    bot.send_message(
+                        chat_id,
+                        format!(
+                            "🏖️ <b>University Semester Break Mode (Admin)</b>\n\n\
+                             Status: {}\n\n\
+                             • Send <code>/vacation on</code> to pause all class alerts batch-wide.\n\
+                             • Send <code>/vacation until YYYY-MM-DD</code> to pause until a date.\n\
+                             • Send <code>/vacation off</code> to resume normal classes.",
+                            status
+                        ),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+            } else {
+                // Non-admin classmate personal vacation / alert snooze
+                if lower.starts_with("off")
+                    || lower.starts_with("resume")
+                    || lower.starts_with("stop")
+                {
+                    let _ = ctx
+                        .store
+                        .update(|s| s.set_user_vacation(chat_id.0, false, None));
+                    let state = ctx.store.read();
+                    let global_note = if state.is_vacation_active() {
+                        "\n\n<i>📢 Note: University-wide semester break is currently active, so morning alerts will resume once the semester officially reopens.</i>"
+                    } else {
+                        ""
+                    };
+                    bot.send_message(
+                        chat_id,
+                        format!(
+                            "🎒 <b>Welcome Back! Personal Vacation Deactivated.</b>\n\
+                             Normal morning briefings and class reminders are now active for your chat.{}",
+                            global_note
+                        ),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                } else if lower.starts_with("on") || lower.starts_with("start") {
+                    let _ = ctx
+                        .store
+                        .update(|s| s.set_user_vacation(chat_id.0, true, None));
+                    bot.send_message(
+                        chat_id,
+                        "🏖️ <b>Personal Vacation / Snooze Activated!</b>\n\
+                         Morning briefings and pre-class reminders are paused for your chat.\n\n\
+                         <i>Send <code>/vacation off</code> anytime to resume alerts.</i>",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                } else if lower.starts_with("until") {
+                    let date_str = clean.trim_start_matches("until").trim();
+                    match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                        Ok(until) => {
+                            let _ = ctx
+                                .store
+                                .update(|s| s.set_user_vacation(chat_id.0, true, Some(until)));
+                            bot.send_message(
+                                chat_id,
+                                format!(
+                                    "🏖️ <b>Personal Vacation Activated until {}!</b>\n\
+                                     Morning alerts and class reminders will automatically resume after this date for your chat.\n\n\
+                                     <i>Send <code>/vacation off</code> anytime to cancel early.</i>",
+                                    until
+                                ),
+                            )
+                            .parse_mode(ParseMode::Html)
+                            .await?;
+                        }
+                        Err(_) => {
+                            bot.send_message(
+                                chat_id,
+                                "⚠️ Invalid date format. Use <code>YYYY-MM-DD</code> (e.g. <code>/vacation until 2026-11-15</code>).",
+                            )
+                            .parse_mode(ParseMode::Html)
+                            .await?;
+                        }
+                    }
+                } else {
+                    let state = ctx.store.read();
+                    let personal_status = if state.is_user_vacation_active(chat_id.0) {
+                        if let Some(Some(until)) = state.get_user_vacation_until(chat_id.0) {
+                            format!("🏖️ <b>ACTIVE</b> (until {until})")
+                        } else {
+                            "🏖️ <b>ACTIVE</b> (Personal break)".to_string()
+                        }
+                    } else {
+                        "🎒 <b>INACTIVE</b> (Receiving scheduled alerts)".to_string()
+                    };
+                    let global_note = if state.is_vacation_active() {
+                        "\n<i>📢 Note: University-wide semester break is currently active.</i>\n"
+                    } else {
+                        ""
+                    };
+                    bot.send_message(
+                        chat_id,
+                        format!(
+                            "🏖️ <b>Personal Vacation / Alert Snooze</b>\n\n\
+                             Your Status: {}{}\n\
+                             • Send <code>/vacation on</code> to pause your personal class alerts.\n\
+                             • Send <code>/vacation until YYYY-MM-DD</code> to snooze until a date.\n\
+                             • Send <code>/vacation off</code> to resume normal alerts.",
+                            personal_status,
+                            global_note
+                        ),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
             }
         }
 

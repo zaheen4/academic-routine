@@ -268,6 +268,10 @@ pub struct RoutineState {
     #[serde(default)]
     pub user_preclass_reminders: BTreeSet<i64>,
 
+    /// Map of Telegram Chat ID -> optional personal vacation auto-expiration date (YYYY-MM-DD).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub user_vacations: BTreeMap<i64, Option<NaiveDate>>,
+
     /// Chat ID -> set of reminder keys already delivered.
     ///
     /// Key format: `YYYY-MM-DD|CODE|HHMM`. Persisted so a restart does not
@@ -302,6 +306,7 @@ impl Default for RoutineState {
             registered_chats: BTreeSet::new(),
             muted_morning_alerts: BTreeSet::new(),
             user_preclass_reminders: BTreeSet::new(),
+            user_vacations: BTreeMap::new(),
             reminders_sent: BTreeMap::new(),
             last_morning_briefing: None,
         }
@@ -452,25 +457,66 @@ impl RoutineState {
     }
 
     /// Automatically clears and expires vacation mode if `vacation_until` is in the past.
+    /// Also clears any personal user vacations whose expiration date has passed.
     /// Returns true if the state was mutated.
     pub fn clean_expired_vacation(&mut self) -> bool {
+        let mut changed = false;
+        let today = academic_now().date_naive();
         if self.vacation_mode {
             if let Some(until) = self.vacation_until {
-                let today = academic_now().date_naive();
                 if today > until {
                     self.vacation_mode = false;
                     self.vacation_until = None;
-                    return true;
+                    changed = true;
                 }
             }
         }
-        false
+
+        let initial_len = self.user_vacations.len();
+        self.user_vacations.retain(|_, until_opt| match until_opt {
+            Some(until) => *until >= today,
+            None => true,
+        });
+        if self.user_vacations.len() != initial_len {
+            changed = true;
+        }
+
+        changed
     }
 
     /// Enables or disables vacation mode with an optional auto-expiration date.
     pub fn set_vacation(&mut self, enabled: bool, until: Option<NaiveDate>) {
         self.vacation_mode = enabled;
         self.vacation_until = if enabled { until } else { None };
+    }
+
+    /// Returns true if a personal vacation / alert snooze is active for a specific chat.
+    #[must_use]
+    pub fn is_user_vacation_active(&self, chat_id: i64) -> bool {
+        if let Some(until_opt) = self.user_vacations.get(&chat_id) {
+            if let Some(until) = until_opt {
+                let today = academic_now().date_naive();
+                return today <= *until;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Gets the expiration date of a personal vacation for a chat, if set.
+    #[must_use]
+    pub fn get_user_vacation_until(&self, chat_id: i64) -> Option<Option<NaiveDate>> {
+        self.user_vacations.get(&chat_id).copied()
+    }
+
+    /// Sets or clears personal vacation for a specific chat.
+    pub fn set_user_vacation(&mut self, chat_id: i64, enabled: bool, until: Option<NaiveDate>) {
+        if enabled {
+            self.user_vacations.insert(chat_id, until);
+            self.registered_chats.insert(chat_id);
+        } else {
+            self.user_vacations.remove(&chat_id);
+        }
     }
 
     /// Enables or disables 6:00 AM morning briefings.
@@ -1243,6 +1289,51 @@ mod tests {
         assert!(state.clean_expired_vacation());
         assert!(!state.vacation_mode);
         assert_eq!(state.vacation_until, None);
+    }
+
+    #[test]
+    fn test_user_vacation_lifecycle_and_auto_expiration() {
+        let mut state = RoutineState::default();
+        let user_a = 12345;
+        let user_b = 67890;
+
+        assert!(!state.is_user_vacation_active(user_a));
+
+        // Indefinite personal vacation
+        state.set_user_vacation(user_a, true, None);
+        assert!(state.is_user_vacation_active(user_a));
+        assert!(state.registered_chats.contains(&user_a));
+        assert_eq!(state.get_user_vacation_until(user_a), Some(None));
+
+        // Future personal vacation
+        state.set_user_vacation(
+            user_b,
+            true,
+            Some(NaiveDate::from_ymd_opt(2099, 1, 1).unwrap()),
+        );
+        assert!(state.is_user_vacation_active(user_b));
+        assert_eq!(
+            state.get_user_vacation_until(user_b),
+            Some(Some(NaiveDate::from_ymd_opt(2099, 1, 1).unwrap()))
+        );
+
+        // Past personal vacation
+        state.set_user_vacation(
+            user_a,
+            true,
+            Some(NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()),
+        );
+        assert!(!state.is_user_vacation_active(user_a));
+
+        // Running clean_expired_vacation should prune expired user_a but keep user_b
+        assert!(state.clean_expired_vacation());
+        assert_eq!(state.get_user_vacation_until(user_a), None);
+        assert!(state.is_user_vacation_active(user_b));
+
+        // Deactivating user_b explicitly
+        state.set_user_vacation(user_b, false, None);
+        assert!(!state.is_user_vacation_active(user_b));
+        assert_eq!(state.get_user_vacation_until(user_b), None);
     }
 
     #[test]

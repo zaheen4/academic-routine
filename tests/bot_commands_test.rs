@@ -459,3 +459,40 @@ fn test_calendar_subscription_card_and_keyboards() {
     let no_gist_serialized = serde_json::to_string(&no_gist_kb).unwrap();
     assert!(!no_gist_serialized.contains("webcal://"));
 }
+
+#[test]
+fn test_status_card_and_hybrid_vacation() {
+    use academic_routine::bot::handlers::render_status_card;
+    use academic_routine::{RoutineState, Schedule};
+    use chrono::NaiveDate;
+    use teloxide::types::ChatId;
+
+    let sched = Schedule::new("Test Semester", None, vec![]);
+    let mut state = RoutineState::default();
+
+    let admin_chat = ChatId(1111);
+    let user_chat = ChatId(2222);
+
+    // Initial inactive state
+    let (status_text, _) = render_status_card(&sched, &state, user_chat);
+    assert!(status_text.contains("<b>INACTIVE</b> (Normal Semester)"));
+    assert!(status_text.contains("Morning Alerts:</b> 🔔 <b>ACTIVE</b>"));
+
+    // User personal vacation active
+    state.set_user_vacation(
+        user_chat.0,
+        true,
+        Some(NaiveDate::from_ymd_opt(2099, 1, 1).unwrap()),
+    );
+    let (user_vac_text, _) = render_status_card(&sched, &state, user_chat);
+    assert!(user_vac_text.contains("Personal until 2099-01-01"));
+
+    // Admin view while user has personal vacation (admin sees normal semester)
+    let (admin_text, _) = render_status_card(&sched, &state, admin_chat);
+    assert!(admin_text.contains("<b>INACTIVE</b> (Normal Semester)"));
+
+    // Global semester break active (takes precedence in status display)
+    state.set_vacation(true, None);
+    let (global_text, _) = render_status_card(&sched, &state, user_chat);
+    assert!(global_text.contains("Semester Break"));
+}

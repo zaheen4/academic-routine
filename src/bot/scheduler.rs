@@ -65,7 +65,7 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
     let today = current_academic_day();
 
     for &cid in &recipient_chats {
-        if !state.is_morning_alerts_enabled(cid) {
+        if !state.is_morning_alerts_enabled(cid) || state.is_user_vacation_active(cid) {
             continue;
         }
 
@@ -193,7 +193,9 @@ pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc
         }
 
         // Filter to only chats that have explicitly opted into 30-minute pre-class reminders
-        candidate_chats.retain(|&cid| state.is_preclass_reminders_enabled(cid));
+        candidate_chats.retain(|&cid| {
+            state.is_preclass_reminders_enabled(cid) && !state.is_user_vacation_active(cid)
+        });
         if candidate_chats.is_empty() {
             continue;
         }
