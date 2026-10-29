@@ -51,7 +51,7 @@ flowchart TD
     subgraph SyncLayer ["Cloud Synchronization and State Cache"]
         direction TB
         GistBundle[("GitHub Gist Cloud Bundle: routine.ics, routine_data.json, routine_meta.json")]:::cloud
-        LocalState[("Local Baseline Cache: routine_data.prev.json, routine_state.json")]:::cloud
+        LocalState[("Local Baseline Cache: routine_data.prev.json, attendance_data.json, routine_state.json")]:::cloud
     end
 
     subgraph Delivery ["Consumer Endpoints and Multi-Channel Delivery"]
@@ -146,7 +146,7 @@ $$
 - **Classes Needed for Collegiate**:
   $$\max(0, 3 \times \text{Missed} - \text{Attended})$$
 
-> **Privacy & Self-Hosting Model**: Automated UCAM attendance scraping is strictly a self-hosting privilege. The bot never solicits or stores student portal passwords from other users. On a shared bot instance, classmates can manually record their sessions (`/attend`, `/miss`, `/attendance set`) to calculate collegiate thresholds in their private chat. To enable automated attendance extraction directly from UCAM, run your own self-hosted instance using personal credentials in `.env`.
+> **Privacy & Self-Hosting Model**: Automated UCAM attendance scraping is strictly a self-hosting privilege. The bot never solicits or stores student portal passwords from other users. On a shared bot instance, classmates can manually record their sessions (`/attend`, `/miss`, `/attendance set`) to calculate collegiate thresholds in their private chat. To enable automated attendance extraction directly from UCAM, run your own self-hosted instance using personal credentials in `.env`. On a self-hosted instance the weekly scrape also mirrors the official attendance grid into `/attendance` for the admin account; see the **Official Attendance Import** note under [Environment Configuration](#environment-configuration).
 
 ---
 
@@ -203,7 +203,12 @@ academic-routine sync-gist
 
 # Scraping and spreadsheet sync
 academic-routine sync-ucam               # --force re-scrapes, --local-only skips publishing
+academic-routine sync-ucam --dry-run     # full two-account run, writes no files
 academic-routine sync-gsheet
+
+# Offline parser, no browser (fixtures are sanitized live captures)
+.venv/bin/python scraper/extract_ucam.py \
+  --html-file scraper/tests/fixtures/routine_rowspan_2026.html --dry-run
 
 # Telegram assistant with embedded HTTP health-check server (--no-http to disable)
 academic-routine bot
@@ -250,6 +255,7 @@ cp .env.example .env
 > **State Architecture & Local Isolation**:
 > - Routine state (`routine_state.json`) is strictly local to a single host and must never be shared between different machines. Cloud syncing is strictly limited to public calendar assets (`routine.ics`, `routine_data.json`, `routine_meta.json`).
 > - **Concurrent Access**: The background scraper service (`academic-routine-sync.service`) and the long-running bot daemon (`academic-routine.service`) may run simultaneously on the host. Mutations use a reload-before-write pattern via `StateStore` to avoid clobbering concurrent state changes.
+> - **Official Attendance Import**: a successful self-hosted scrape writes `output/attendance_data.json` and merges it into the admin chat's attendance state, replacing manually recorded counts for every course the portal returned. Other users' manual counts are untouched. If the attendance grid fails to render, the run logs a warning and still publishes the routine.
 > - **Schema Protection**: Binaries older than the on-disk state schema version refuse to start rather than corrupting or resetting the file.
 > - **Admin Precedence**: Both the CLI and the daemon prioritize `ADMIN_CHAT_ID` over the fallback `TELEGRAM_CHAT_ID`.
 
@@ -260,6 +266,8 @@ Execute the test suite:
 cargo test --all-targets
 uv run pytest -q
 ```
+
+The scraper suite runs against sanitized live DOM captures in `scraper/tests/fixtures/` — a nested SSRS report with `rowspan` continuation rows, and the 5-column attendance grid with both status variants — so parser regressions surface without launching a browser.
 
 Check code formatting and lints:
 
