@@ -79,18 +79,19 @@ This document logs architectural and operational choices that govern the codebas
 **Rules out.** Writing toy HTML fixtures for complex WebForms reports.
 **Revisit if.** The portal migrates away from SSRS to clean REST/JSON APIs.
 
-### 2026-10-29 — Scraper fixes deploy as runtime Python updates
+### 2026-10-29 — Scraper fixes need no rebuild; schema changes do need a restart
 
-**Decision.** Scraper fixes within `scraper/extract_ucam.py` deploy without requiring immediate Rust binary recompilation or daemon restarts.
-**Why.** The daemon and timer invoke the Python script directly from `WorkingDirectory` on each scrape pass, picking up script changes immediately.
-**Rules out.** Forcing systemd service restarts for Python-only bugfixes.
-**Revisit if.** Scraper logic is rewritten directly in native Rust.
+**Decision.** Python-only fixes deploy on the next scrape. Any change to `src/`, `Cargo.*` or `STATE_SCHEMA_VERSION` requires `cargo install --path . --locked` and a daemon restart.
+**Why.** The daemon and timer invoke the script from `WorkingDirectory`; the binary is compiled.
+**Rules out.** Restarting services for every parser fix, or shipping a binary change without a restart.
+**Revisit if.** The scraper is rewritten in Rust.
 
-### *(Open)* — iCalendar recurrence rules omit UNTIL boundary
+### *(Open)* 2026-10-29 — iCalendar recurrence has no UNTIL boundary
 
-**Decision.** Published `RRULE` lines do not specify an `UNTIL` timestamp because the portal does not provide an authoritative semester end date.
-**Why.** Synthesizing an arbitrary semester end date risks truncating valid classes before final examinations.
-**Rules out.** Deriving end dates from textual semester names (e.g., "January-July 2026" routines that begin in November).
-**Revisit if.** An explicit `--until` CLI argument is configured or the portal publishes academic calendar schedules.
+**Decision.** Published `RRULE` lines carry no `UNTIL` until a semester end date has a real source.
+**Why.** The portal publishes no structured end date. The semester label cannot be trusted for this: "2024-2025 Level 4 Term 1 January-July 2026" is the active term while the first event starts in November 2026, so deriving a date from the label would truncate valid classes.
+**What already exists.** `academic-routine export --until YYYY-MM-DD` applies an `UNTIL` boundary (`src/cli.rs:139-141`); the weekly unit simply does not pass it.
+**Open question.** Add `--until` to the sync unit, or add a `semester_end_date` source to state.
+**Revisit if.** The portal publishes an academic calendar, or a term end date is recorded in state.
 
 *Last reviewed against v0.3.2 (2026-10-29)*

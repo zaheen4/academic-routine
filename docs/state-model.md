@@ -11,9 +11,10 @@ All runtime and generated files reside within the `output/` directory:
 | `output/routine_state.json` | Bot daemon / CLI commands | Bot server, CLI commands | Local only | **Do not delete.** Contains user alert preferences, vacation modes, and attendance counts. |
 | `output/routine_state.json.bak` | `StateStore` atomic write | `StateStore::open` (recovery) | Local only | Safe to delete. Automatically recreated on next state mutation. |
 | `output/routine_state.json.corrupt-<ts>` | `StateStore::open` | Host administrator | Local only | Safe to delete after inspecting corrupted JSON. |
-| `output/routine_data.json` | Scraper / `sync-ucam` | Engine, diff auditor, bot | Published to Gist | Safe to delete if fresh scrape is available; triggers re-scrape if missing. |
+| `output/routine_data.json` | Scraper / `sync-ucam` | Engine, diff auditor, bot | Published to Gist | Safe to delete, but **not** auto-regenerated: read commands fail with `Current routine file not found` until the next `sync-ucam` writes a new one. |
 | `output/routine_data.prev.json` | `sync-ucam` | Diff engine | Local only | Safe to delete. Recreated from current data on subsequent scrape. |
 | `output/attendance_data.json` | Scraper (`extract_ucam.py`) | CLI state importer | Local only | Safe to delete. Recreated on subsequent attendance scrape. |
+| `output/routine_state.json.pre-<version>` | Manual pre-upgrade backup | Host administrator (recovery) | Local only | Safe to delete. Manual upgrade/rollback backup; keep the latest two. |
 | `output/routine.ics` | Engine (`exporters::ics`) | Calendar subscribers | Published to Gist | Safe to delete. Re-exported automatically during sync or export commands. |
 
 ## 2. State Schema v2 and Forward Protection
@@ -37,7 +38,7 @@ When automated scraping retrieves official records:
 
 1. **Target Isolation:** Imported attendance records target strictly the chat ID configured in `ADMIN_CHAT_ID`. Other registered users retain their independent manual records.
 2. **Selective Course Overwrites:** The import overwrites attendance counts (`attended`, `missed`) exclusively for courses returned in `attendance_data.json`. Any manually added course not returned by the portal is preserved.
-3. **Manual Overrides:** Users can issue `/attend`, `/miss`, or `/attendance set <CODE> <P> <T>` at any time to correct or calibrate counts between scrape cycles.
+3. **Manual Overrides:** Users can issue `/attend`, `/miss`, or `/attendance set <CODE> <ATT> <MIS>` at any time to correct or calibrate counts between scrape cycles.
 
 ## 5. Artifact Data Flow
 

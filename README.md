@@ -214,8 +214,10 @@ academic-routine sync-gist
 
 # Scraping and spreadsheet sync
 academic-routine sync-ucam               # --force re-scrapes, --local-only skips publishing
-academic-routine sync-ucam --dry-run     # full two-account run, writes no files
 academic-routine sync-gsheet
+
+# Full two-account dry run (browser, no files written) — sync-ucam has no --dry-run
+.venv/bin/python scraper/extract_ucam.py --dry-run --force
 
 # Offline parser, no browser (fixtures are sanitized live captures)
 .venv/bin/python scraper/extract_ucam.py \

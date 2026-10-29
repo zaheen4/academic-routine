@@ -125,4 +125,21 @@ Before committing any captured DOM snapshot to `scraper/tests/fixtures/`:
 | `attendance_exact.html` | Legacy attendance table with explicit present and absent counts. |
 | `attendance_percent_only.html` | Legacy attendance table with percentage-only values. |
 
+## 11. Semester Rollover
+
+The portal adds a **new first non-zero option** to `#ctl00_MainContainer_ddlHeldIn` at the start of each academic term. Never hard-code a term value (`2146` is the 2024-2025 Level 4 Term 1 identifier and will be replaced); always resolve the first option whose value is not `"0"`.
+
+At semester rollover, expect:
+
+- The routine report returns **zero data rows** until the registrar officially publishes the term schedule. The extractor tolerates this and logs a warning rather than failing the execution.
+- Attendance rows display `0/0` classes during the initial days of the semester because no classes have convened yet.
+- The previous semester's data remains on disk until a successful scrape replaces it.
+
+### Rollover Operational Procedure
+
+1. Run `academic-routine sync-ucam --headed` and confirm the new term label is selected in the dropdown.
+2. Run `.venv/bin/python scraper/extract_ucam.py --dry-run --force` and verify class entries once the registrar publishes the routine.
+3. Run `academic-routine sync-ucam --force` once the term routine is live to publish the new baseline.
+4. If the dry-run continues to report zero entries after the official routine is published, re-capture DOM artifacts in a single browser session (§8) to verify if the report layout was modified.
+
 *Last reviewed against v0.3.2 (2026-10-29)*
