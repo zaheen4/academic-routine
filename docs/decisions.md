@@ -1,0 +1,96 @@
+# Architecture Decision Records
+
+This document logs architectural and operational choices that govern the codebase. Consult these entries before proposing changes to established behaviors.
+
+### 2026-10-20 — Section filtering aligns theory and lab subdivisions
+
+**Decision.** The routine system defaults to Section `B` for general theory lectures while allowing individual students to subscribe to lab sub-sections (`B1` or `B2`) via `/section`.
+**Why.** Academic routine schedules group all students into cohort `B` for lectures, but split them into sub-cohorts for practical laboratory sessions.
+**Rules out.** Hard-coding single-section schedules or generating completely separate calendars per cohort.
+**Revisit if.** The university ceases dividing cohorts into lab sub-sections.
+
+### 2026-10-22 — Admin ID takes precedence over general chat ID
+
+**Decision.** The CLI and daemon prioritize `ADMIN_CHAT_ID` over `TELEGRAM_CHAT_ID` when targeting administrative updates.
+**Why.** Multi-user operation requires distinguishing the primary host administrator from broadcast channels or non-administrative subscribers.
+**Rules out.** Hardcoding a single chat recipient or relying on runtime guesswork.
+**Revisit if.** Multi-tenant administrative RBAC is implemented.
+
+### 2026-10-25 — State schema v2 with downgrade refusal and corruption quarantine
+
+**Decision.** `RoutineState` enforces `schema_version = 2`. Binaries refuse execution if the file schema version is newer than supported, and unparseable state files are quarantined to `.corrupt-<timestamp>` rather than overwritten.
+**Why.** Prevents silent state corruption when rolling back binaries or recovering from unclean host shutdowns.
+**Rules out.** In-place truncation or silent resets to default empty state.
+**Revisit if.** An external database engine replaces JSON flat-file storage.
+
+### 2026-10-25 — Gist carries only public calendar assets; state never leaves the host
+
+**Decision.** Cloud synchronization is strictly restricted to `routine.ics`, `routine_data.json`, and `routine_meta.json`. `routine_state.json` is never uploaded to GitHub.
+**Why.** State contains chat IDs, user preferences, and private notification markers that must remain private to the host instance.
+**Rules out.** Syncing entire state bundles across machines via GitHub Gist.
+**Revisit if.** End-to-end encrypted distributed state storage is designed.
+
+### 2026-10-26 — Release convention uses annotated tags and GitHub Releases without binary assets
+
+**Decision.** Releases use annotated git tags named after the release title (`v0.3.X — Title`) and publish notes via GitHub Releases without attaching compiled binary assets or tracking `CHANGELOG.md`.
+**Why.** Keeps the repository lean and minimal for a self-hosted single-maintainer project built from source via Cargo and Python uv.
+**Rules out.** Bloating git history with binary release artifacts or duplicating notes across changelogs.
+**Revisit if.** Pre-compiled distribution packages (e.g., Debian packages or Homebrew formulae) are distributed.
+
+### 2026-10-29 — Attendance extraction relies exclusively on the course grid
+
+**Decision.** Automated attendance data is parsed solely from the postback table `#ctl00_MainContainer_gvCourseList`. Dashboard progress cards are used only for offline validation.
+**Why.** The course grid provides complete section associations and all 9 enrolled courses in a single navigation step. Visiting dashboard cards doubles session duration without providing extra data.
+**Rules out.** Multi-page navigation scraping loops per account.
+**Revisit if.** The portal removes percentages or classes from the table view.
+
+### 2026-10-29 — Portal attendance is authoritative for the admin chat
+
+**Decision.** Scraping automatically updates attendance counts in the admin's chat for every course returned by the portal, overwriting prior manual increments. Other users' records are untouched.
+**Why.** Manual session counting frequently drifts from official registrar counts. The primary user requires synchronization with official records.
+**Rules out.** Requiring manual confirmation prompts on every scheduled scrape.
+**Revisit if.** Portal attendance reporting latency exceeds several weeks.
+
+### 2026-10-29 — Teacher phones normalized to 11-digit local format
+
+**Decision.** Phone numbers matched with international country prefixes (`+88` or `88`) are stripped down to the canonical 11-digit local format (`01XXXXXXXXX`).
+**Why.** Downstream presentation cards, dialer links, and Telegram messages require consistent number formatting.
+**Rules out.** Storing mixed international and local phone strings in JSON schemas.
+**Revisit if.** International instructors with non-Bangladesh phone numbers are listed.
+
+### 2026-10-29 — Weekly sync unit maintains `--force` flag
+
+**Decision.** The systemd timer invokes `academic-routine sync-ucam --force` by default, bypassing row-count downgrade checks during scheduled runs.
+**Why.** Automated execution cannot prompt interactive confirmation if course schedules are legitimately reduced. Pre-release verification and dry-runs serve as the safety gate.
+**Rules out.** Stalling automated weekly syncs when terms conclude and class counts decrease.
+**Revisit if.** Interactive headless approval queues are implemented.
+
+### 2026-10-29 — One-time room and teacher change notifications are accepted
+
+**Decision.** When parser corrections restore valid room numbers (e.g., from `Room B` to `Room 120`), the resulting diff notifications sent to subscribers are accepted rather than suppressed.
+**Why.** Subscribers require clear notice that calendar locations have changed to real rooms.
+**Rules out.** Silently suppressing diff events during major scraper migrations.
+**Revisit if.** Routine changes affect hundreds of users simultaneously with noisy spam.
+
+### 2026-10-29 — Tests utilize sanitized live DOM captures
+
+**Decision.** Scraper unit tests parse sanitized live HTML captures (`scraper/tests/fixtures/`) rather than hand-crafted synthetic HTML snippets.
+**Why.** Synthetic HTML failed to replicate real SSRS nested table layouts and `rowspan` continuation shifts that broke production parsing.
+**Rules out.** Writing toy HTML fixtures for complex WebForms reports.
+**Revisit if.** The portal migrates away from SSRS to clean REST/JSON APIs.
+
+### 2026-10-29 — Scraper fixes deploy as runtime Python updates
+
+**Decision.** Scraper fixes within `scraper/extract_ucam.py` deploy without requiring immediate Rust binary recompilation or daemon restarts.
+**Why.** The daemon and timer invoke the Python script directly from `WorkingDirectory` on each scrape pass, picking up script changes immediately.
+**Rules out.** Forcing systemd service restarts for Python-only bugfixes.
+**Revisit if.** Scraper logic is rewritten directly in native Rust.
+
+### *(Open)* — iCalendar recurrence rules omit UNTIL boundary
+
+**Decision.** Published `RRULE` lines do not specify an `UNTIL` timestamp because the portal does not provide an authoritative semester end date.
+**Why.** Synthesizing an arbitrary semester end date risks truncating valid classes before final examinations.
+**Rules out.** Deriving end dates from textual semester names (e.g., "January-July 2026" routines that begin in November).
+**Revisit if.** An explicit `--until` CLI argument is configured or the portal publishes academic calendar schedules.
+
+*Last reviewed against v0.3.2 (2026-10-29)*

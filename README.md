@@ -20,6 +20,17 @@ An autonomous academic timetable engine, RFC 5545 iCalendar synchronizer, offici
 
 ---
 
+## Documentation
+
+Depth lives in [`docs/`](docs/index.md) — the README stays the front door:
+
+- [`docs/ucam-scraping.md`](docs/ucam-scraping.md) — the UCAM portal contract, re-capture procedure, and fixture sanitization.
+- [`docs/operations.md`](docs/operations.md) — systemd units, tokens, Gist/Sheet contracts, troubleshooting, releases.
+- [`docs/state-model.md`](docs/state-model.md) — local vs published artifacts, schema v2, concurrency, attendance import.
+- [`docs/decisions.md`](docs/decisions.md) — why settled behaviours are settled.
+
+---
+
 ## System Architecture
 
 ```mermaid
