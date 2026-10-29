@@ -59,11 +59,12 @@ RE_TIME_SLOT = re.compile(
     r"(\d{1,2}:\d{1,2}\s*(?:AM|PM)?\s*-\s*\d{1,2}:\d{1,2}\s*(?:AM|PM)?)",
     re.IGNORECASE,
 )
-RE_PHONE = re.compile(r"\b(01\d{9})\b")
+RE_PHONE = re.compile(r"(?:\+88|\b88|\b)(01\d{9})\b")
 RE_EMAIL = re.compile(r"\b([\w\.-]+@[\w\.-]+\.\w+)\b")
 RE_ROOM = re.compile(r"\b(AC-\d{3}|\d{3}|CSE\s+Lab[-\s]?\d*|Lab[-\s]?\d+)\b", re.IGNORECASE)
 RE_SECTION = re.compile(r"\b(B|B1|B2|A|A1|A2|C|C1|C2)\b")
 DAYS_OF_WEEK = ("Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri")
+REQUIRED_HEADER = {"course", "course title", "day", "time slot"}
 
 # Header names (normalized to lower case, punctuation collapsed) mapped to result fields.
 HEADER_ALIASES = {
@@ -506,6 +507,92 @@ def _extract_teacher(tds: list[str]) -> tuple[str, str, str]:
     return teacher, teacher_phone, teacher_email
 
 
+def _select_report_table(soup: BeautifulSoup):
+    """Locates the innermost routine report table from SSRS ReportViewer HTML.
+
+    Prefers a table whose early rows contain the required header labels
+    ('course', 'course title', 'day', 'time slot'). If nested, returns the
+    innermost matching table. Falls back to table[cols="9"].
+    """
+    candidates = []
+    for t in soup.find_all("table"):
+        direct_rows = [tr for tr in t.find_all("tr") if tr.find_parent("table") == t]
+        for r in direct_rows[:3]:
+            cells = {
+                td.get_text(separator=" ", strip=True).lower()
+                for td in r.find_all(["td", "th"])
+            }
+            if REQUIRED_HEADER.issubset(cells):
+                candidates.append(t)
+                break
+    if candidates:
+        return candidates[-1]
+    hint = soup.find("table", attrs={"cols": "9"})
+    if hint:
+        return hint
+    return None
+
+
+def _expanded_rows(table) -> list[list[str]]:
+    """Expands rowspan and colspan in a table into a uniform 2D grid of cell texts.
+
+    Handles SSRS spacer rows (skips rows where all cells are empty) and propagates
+    spanned text down into continuation rows.
+    """
+    trs = [tr for tr in table.find_all("tr") if tr.find_parent("table") == table]
+    grid = []
+    active_rowspans: dict[int, tuple[int, str]] = {}
+    for tr in trs:
+        row = []
+        col_idx = 0
+        cells = [c for c in tr.find_all(["td", "th"]) if c.find_parent("tr") == tr]
+        cell_iter = iter(cells)
+        while True:
+            if col_idx in active_rowspans:
+                remaining, text = active_rowspans[col_idx]
+                row.append(text)
+                if remaining > 1:
+                    active_rowspans[col_idx] = (remaining - 1, text)
+                else:
+                    del active_rowspans[col_idx]
+                col_idx += 1
+                continue
+            try:
+                cell = next(cell_iter)
+            except StopIteration:
+                if any(k >= col_idx for k in active_rowspans):
+                    row.append("")
+                    col_idx += 1
+                    continue
+                break
+            try:
+                rspan = max(1, int(cell.get("rowspan", 1)))
+            except (ValueError, TypeError):
+                rspan = 1
+            try:
+                cspan = max(1, int(cell.get("colspan", 1)))
+            except (ValueError, TypeError):
+                cspan = 1
+            text = cell.get_text(separator=" ", strip=True)
+            for _ in range(cspan):
+                row.append(text)
+                if rspan > 1:
+                    active_rowspans[col_idx] = (rspan - 1, text)
+                col_idx += 1
+        if any(cell_text for cell_text in row):
+            grid.append(row)
+    return grid
+
+
+def _legacy_rows(soup: BeautifulSoup) -> list[list[str]]:
+    rows = []
+    for row in soup.find_all("tr"):
+        tds = [td.get_text(separator=" ", strip=True) for td in row.find_all(["td", "th"])]
+        if tds:
+            rows.append(tds)
+    return rows
+
+
 def parse_report_html(html: str, default_section: str = "B") -> list[dict]:
     """Parses class routine entries from the UCAM SSRS ReportViewer HTML table.
 
@@ -526,9 +613,10 @@ def parse_report_html(html: str, default_section: str = "B") -> list[dict]:
     header_seen = False
     warned_missing: set[str] = set()
 
-    rows = soup.find_all("tr")
-    for row in rows:
-        tds = [td.get_text(separator=" ", strip=True) for td in row.find_all(["td", "th"])]
+    table = _select_report_table(soup)
+    rows_tds = _expanded_rows(table) if table else _legacy_rows(soup)
+
+    for tds in rows_tds:
         if not tds:
             continue
 
@@ -654,15 +742,15 @@ def parse_report_html(html: str, default_section: str = "B") -> list[dict]:
             "CourseCode": current_course_code,
             "CourseTitle": current_title or "",
             "Teacher": teacher,
-            "TeacherPhone": teacher_phone,
-            "TeacherEmail": teacher_email,
+            "TeacherPhone": teacher_phone or "",
+            "TeacherEmail": teacher_email or "",
             "Day": day_found,
             "Room": room,
             "TimeSlot": time_slot,
             "Section": section,
         })
 
-    if not header_seen and rows:
+    if not header_seen and rows_tds:
         logger.warning(
             "No recognizable routine table header found; using positional fallback "
             "(Day+1=Room, Day+2=Time, Day+3=Section)."
@@ -706,7 +794,52 @@ def parse_attendance_html(html: str) -> list[dict]:
         return []
 
     records = []
-    rows = table.find_all("tr")
+    rows = [tr for tr in table.find_all("tr") if tr.find_parent("table") == table]
+
+    # Detect 2026 5-column layout: "Present: 37.50% Total: 8 Classes ..."
+    is_new_layout = any(
+        re.search(
+            r"Present:\s*[\d.]+\s*%.*?Total:\s*\d+\s*Class",
+            r.get_text(separator=" ", strip=True),
+            re.IGNORECASE,
+        )
+        for r in rows
+    )
+
+    if is_new_layout:
+        for r in rows:
+            tds = [td.get_text(separator=" ", strip=True) for td in r.find_all(["td", "th"])]
+            if len(tds) < 5 or not tds[0].isdigit():
+                continue
+            c_info = tds[1]
+            att_info = tds[4]
+
+            code_match = RE_COURSE_CODE.search(c_info)
+            if not code_match:
+                continue
+            course_code = code_match.group(1).upper()
+
+            pct_m = re.search(r"Present:\s*([\d.]+)\s*%", att_info, re.IGNORECASE)
+            total_m = re.search(r"Total:\s*(\d+)\s*Class(?:es)?", att_info, re.IGNORECASE)
+            status_m = re.search(r"\b((?:Dis-)?Collegiate|Non-?Collegiate)\b", att_info, re.IGNORECASE)
+
+            total = int(total_m.group(1)) if total_m else 0
+            pct = float(pct_m.group(1)) if pct_m else 0.0
+            status = status_m.group(1) if status_m else "Collegiate"
+
+            attended, missed, derived = _derive_attendance(total, pct, None, None)
+
+            records.append({
+                "course_code": course_code,
+                "total_classes": total,
+                "attended": attended,
+                "missed": missed,
+                "percentage": pct,
+                "status": status,
+                "derived": derived,
+            })
+        return records
+
     for r in rows:
         tds = [td.get_text(separator=" ", strip=True) for td in r.find_all(["td", "th"])]
         if len(tds) < 4:
@@ -927,13 +1060,45 @@ async def extract_account_routine(
                 await wait_for_js(
                     tab,
                     '(() => {'
-                    '  const t = document.getElementById("ctl00_MainContainer_gvCourseList");'
-                    '  return !!t || document.readyState === "complete";'
+                    '  const sel = document.getElementById("ctl00_MainContainer_ddlHeldIn");'
+                    '  return !!sel;'
                     '})()',
-                    description='attendance table ("#ctl00_MainContainer_gvCourseList")',
-                    timeout=30,
+                    description='attendance semester dropdown ("#ctl00_MainContainer_ddlHeldIn")',
+                    timeout=45,
                     acc_id=acc_id,
                 )
+                att_sem = await tab.evaluate("""
+                    (() => {
+                        const sel = document.getElementById("ctl00_MainContainer_ddlHeldIn");
+                        if (!sel) return null;
+                        for (let i = 0; i < sel.options.length; i++) {
+                            if (sel.options[i].value !== "0") {
+                                sel.value = sel.options[i].value;
+                                if (sel.onchange) { sel.onchange(); }
+                                sel.dispatchEvent(new Event("change", { bubbles: true }));
+                                return sel.options[i].text;
+                            }
+                        }
+                        return null;
+                    })()
+                """)
+                logger.info("[%s] Synchronized attendance semester: %s", acc_id, att_sem)
+                try:
+                    await wait_for_js(
+                        tab,
+                        '(() => {'
+                        '  const t = document.getElementById("ctl00_MainContainer_gvCourseList");'
+                        '  return !!t && t.rows.length > 1;'
+                        '})()',
+                        description='attendance table rows ("#ctl00_MainContainer_gvCourseList")',
+                        timeout=45,
+                        acc_id=acc_id,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "[%s] Attendance grid did not render after semester postback.", acc_id
+                    )
+
                 att_html = await tab.evaluate("""
                     (() => {
                         const t = document.getElementById("ctl00_MainContainer_gvCourseList");
@@ -942,11 +1107,24 @@ async def extract_account_routine(
                 """)
                 if att_html:
                     attendance_records = parse_attendance_html(att_html)
-                    logger.info(
-                        "[%s] Successfully extracted attendance for %d courses.",
-                        acc_id,
-                        len(attendance_records),
-                    )
+                    if not attendance_records:
+                        row_count = await tab.evaluate("""
+                            (() => {
+                                const t = document.getElementById("ctl00_MainContainer_gvCourseList");
+                                return t ? t.rows.length : 0;
+                            })()
+                        """)
+                        logger.warning(
+                            "[%s] Attendance grid rendered with %d rows but parser returned 0 records.",
+                            acc_id,
+                            row_count,
+                        )
+                    else:
+                        logger.info(
+                            "[%s] Successfully extracted attendance for %d courses.",
+                            acc_id,
+                            len(attendance_records),
+                        )
             except Exception as e:
                 logger.warning(
                     "[%s] Attendance dashboard extraction notice: %s", acc_id, redact(e)

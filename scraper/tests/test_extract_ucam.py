@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 
 from scraper import extract_ucam
 
@@ -223,3 +224,97 @@ def test_nodriver_version_check_accepts_tested_line(monkeypatch):
         extract_ucam.importlib.metadata, "version", lambda _name: "0.50.6"
     )
     extract_ucam.assert_supported_nodriver()
+
+
+def test_rowspan_continuation_rows_keep_room_and_teacher():
+    entries = extract_ucam.parse_report_html(fixture_text("routine_rowspan_2026.html"))
+    assert len(entries) == 13
+
+    for e in entries:
+        assert e["Room"] not in {"B", "B1", "B2"}
+        assert e["Teacher"] not in extract_ucam.DAYS_OF_WEEK
+
+    # Check continuation row for CSE-4101 on Wednesday
+    cse_wed = [e for e in entries if e["CourseCode"] == "CSE-4101" and e["Day"] == "Wed"]
+    assert len(cse_wed) == 1
+    assert cse_wed[0]["Room"] == "120"
+    assert cse_wed[0]["Teacher"] == "UKD_Sample Utpol"
+    assert cse_wed[0]["Section"] == "B"
+
+
+def test_rowspan_skips_unscheduled_project_row():
+    # Table has 14 course rows in total, but CSE-4114 (Project) has no schedule and is skipped
+    entries = extract_ucam.parse_report_html(fixture_text("routine_rowspan_2026.html"))
+    codes = {e["CourseCode"] for e in entries}
+    assert "CSE-4114" not in codes
+    assert len(entries) == 13
+
+
+def test_deep_nested_report_is_located_by_header():
+    full_html = fixture_text("routine_rowspan_2026.html")
+    full_entries = extract_ucam.parse_report_html(full_html)
+
+    # Extract only the inner table
+    soup = BeautifulSoup(full_html, "html.parser")
+    inner_table = extract_ucam._select_report_table(soup)
+    assert inner_table is not None
+    inner_entries = extract_ucam.parse_report_html(str(inner_table))
+
+    assert len(full_entries) == len(inner_entries) == 13
+    assert full_entries == inner_entries
+
+
+def test_attendance_5col_counts():
+    records = extract_ucam.parse_attendance_html(fixture_text("attendance_5col_2026.html"))
+    assert len(records) == 9
+    by_code = {r["course_code"]: r for r in records}
+
+    expected = {
+        "CSE-4101": (3, 5, 8, 37.5, True),
+        "CSE-4102": (0, 0, 0, 0.0, False),
+        "CSE-4111": (3, 3, 6, 50.0, True),
+        "CSE-4113": (1, 1, 2, 50.0, True),
+        "CSE-4114": (0, 0, 0, 0.0, False),
+        "CSE-4125": (4, 4, 8, 50.0, True),
+        "CSE-4136": (5, 4, 9, 55.56, True),
+        "CSE-4155": (1, 3, 4, 25.0, True),
+        "SS-4103": (2, 2, 4, 50.0, True),
+    }
+
+    for code, (att, miss, total, pct, derived) in expected.items():
+        assert by_code[code]["attended"] == att
+        assert by_code[code]["missed"] == miss
+        assert by_code[code]["total_classes"] == total
+        assert by_code[code]["percentage"] == pct
+        assert by_code[code]["derived"] is derived
+
+
+def test_attendance_5col_status_variants():
+    records = extract_ucam.parse_attendance_html(fixture_text("attendance_5col_2026.html"))
+    by_code = {r["course_code"]: r for r in records}
+
+    # DC variant stripped of suffix
+    assert by_code["CSE-4101"]["status"] == "Dis-Collegiate"
+    # Empty parens variant defaults to Collegiate
+    assert by_code["CSE-4102"]["status"] == "Collegiate"
+    assert by_code["CSE-4114"]["status"] == "Collegiate"
+
+
+def test_phone_country_code():
+    match1 = extract_ucam.RE_PHONE.search("Phone: +8801912422002")
+    assert match1 is not None
+    assert match1.group(1) == "01912422002"
+
+    match2 = extract_ucam.RE_PHONE.search("Contact: 8801859222633")
+    assert match2 is not None
+    assert match2.group(1) == "01859222633"
+
+    match3 = extract_ucam.RE_PHONE.search("Direct: 01758443472")
+    assert match3 is not None
+    assert match3.group(1) == "01758443472"
+
+    # Routine parse normalization check
+    entries = extract_ucam.parse_report_html(fixture_text("routine_rowspan_2026.html"))
+    ss_entry = next(e for e in entries if e["CourseCode"] == "SS-4103")
+    assert ss_entry["TeacherPhone"] == "01912000000"
+    assert not ss_entry["TeacherPhone"].startswith("+88")
