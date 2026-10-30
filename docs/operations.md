@@ -283,4 +283,4 @@ If an upgraded scraper or binary release introduces an operational regression:
    systemctl --user restart academic-routine.service
    ```
 
-*Last reviewed against v0.3.2 (2026-10-29)*
+*Last reviewed against v0.3.3 (2026-10-30)*

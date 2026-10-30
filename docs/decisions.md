@@ -102,4 +102,4 @@ This document logs architectural and operational choices that govern the codebas
 **Rules out.** `gh release create`, `--notes-file` as a second artifact, a maintained `CHANGELOG.md`, and per-release "Upgrading" sections. It also rules out moving tags: the migration above is the only re-annotation to date.
 **Revisit if.** Releases gain downloadable assets, a second maintainer, or automated publishing.
 
-*Last reviewed against v0.3.2 (2026-10-29)*
+*Last reviewed against v0.3.3 (2026-10-30)*
