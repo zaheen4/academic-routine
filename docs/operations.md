@@ -159,9 +159,10 @@ When cutting a new patch or minor release:
 5. Write the release notes as the annotated tag body. Draft the file first — the tag is write-once, and a typo can only be repaired by moving a tag, which this procedure forbids:
    ```bash
    $EDITOR /tmp/v0.3.3-notes.md
-   git tag -a v0.3.3 -F /tmp/v0.3.3-notes.md
+   git tag -a --cleanup=whitespace v0.3.3 -F /tmp/v0.3.3-notes.md
    git push origin v0.3.3
    ```
+   `--cleanup=whitespace` is not optional: the default `strip` deletes every line beginning with `#`, which silently removes all markdown headings from the note. `whitespace` trims trailing blank lines and leaves the text intact.
 6. **Release Constraints:** No GitHub Release is published (`gh release create` is not used); no binary assets; no `CHANGELOG.md` file in the repository; never modify, re-point, or delete an existing tag.
 
 ### Release Note Template
