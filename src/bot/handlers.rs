@@ -846,10 +846,33 @@ pub fn render_attendance_dashboard(
                 .map(|e| if e.is_lab() { " 🔬" } else { "" })
                 .unwrap_or("");
 
-            let rec = state
-                .get_attendance(chat_id, code)
-                .cloned()
-                .unwrap_or_default();
+            // B2: no record for this chat — never fabricate a 0/0 "Collegiate" card.
+            let Some(rec) = state.get_attendance(chat_id, code) else {
+                text.push_str(&format!(
+                    "<b>{}: {}</b>{}\n\
+                     • Status: <i>no data</i>\n\
+                     • <i>Log with</i> <code>/attend {}</code>\n\n",
+                    code,
+                    escape_html(title),
+                    lab_badge,
+                    code
+                ));
+                continue;
+            };
+
+            // B1: nothing held yet — percentage() would lie and report 100.0 %.
+            if rec.total() == 0 {
+                text.push_str(&format!(
+                    "<b>{}: {}</b>{}\n\
+                     • Status: <b>Not Started</b>\n\
+                     • Record: <i>no classes held yet</i>\n\n",
+                    code,
+                    escape_html(title),
+                    lab_badge
+                ));
+                continue;
+            }
+
             let status = rec.status();
             let pct = rec.percentage();
 
@@ -869,22 +892,20 @@ pub fn render_attendance_dashboard(
 
             match status {
                 AttendanceStatus::Collegiate => {
-                    let bunks = rec.safe_bunks();
-                    text.push_str(&format!("• Safe Bunks: <b>{}</b>\n\n", bunks));
+                    text.push_str(&format!("• Safe Bunks: <b>{}</b>\n\n", rec.safe_bunks()));
                 }
                 AttendanceStatus::NonCollegiate => {
-                    let recov = rec.needed_for_collegiate();
                     text.push_str(&format!(
-                        "• Needed for Collegiate: <b>{}</b> classes\n\n",
-                        recov
+                        "• Needed for Collegiate: <b>{}</b> consecutive classes\n\n",
+                        rec.needed_for_collegiate()
                     ));
                 }
                 AttendanceStatus::DisCollegiate => {
-                    let recov_c = rec.needed_for_collegiate();
-                    let recov_nc = rec.needed_for_non_collegiate();
                     text.push_str(&format!(
-                        "• Needed for Collegiate: <b>{}</b> classes (Non-Collegiate: {})\n\n",
-                        recov_c, recov_nc
+                        "• Needed for Collegiate: <b>{}</b> consecutive classes \
+                         (Non-Collegiate: <b>{}</b>)\n\n",
+                        rec.needed_for_collegiate(),
+                        rec.needed_for_non_collegiate()
                     ));
                 }
             }
@@ -2294,5 +2315,104 @@ mod tests {
         // 4. Routine path missing -> Ok (records with warning, does not fail)
         let missing_path = temp_dir.path().join("nonexistent_routine.json");
         assert_eq!(check_attendance_code(&missing_path, "CSE-9999"), Ok(()));
+    }
+
+    fn att_entry(code: &str, title: &str) -> CourseEntry {
+        CourseEntry::new(
+            code,
+            title,
+            "B",
+            DayOfWeek::Mon,
+            crate::model::TimeSlot::from_hms(9, 15, 10, 30).expect("valid slot"),
+            "120",
+            TeacherContact::new("Test Teacher", None, None),
+        )
+    }
+
+    fn att_sched(codes: &[(&str, &str)]) -> Schedule {
+        Schedule::new(
+            "Level 4 Term 1",
+            None,
+            codes.iter().map(|(c, t)| att_entry(c, t)).collect(),
+        )
+    }
+
+    #[test]
+    fn dashboard_no_record_says_no_data() {
+        let sched = att_sched(&[("CSE-4101", "Artificial Intelligence")]);
+        let state = RoutineState::default();
+        let (text, _) = render_attendance_dashboard(42, &sched, &state);
+        assert!(text.contains("• Status: <i>no data</i>"));
+        assert!(text.contains("• <i>Log with</i> <code>/attend CSE-4101</code>"));
+        assert!(!text.contains("100.0%"));
+        assert!(!text.contains("Collegiate"));
+        assert!(!text.contains("Safe Bunks"));
+    }
+
+    #[test]
+    fn dashboard_zero_total_is_not_started() {
+        let sched = att_sched(&[("CSE-4102", "Mathematical Analysis")]);
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4102", 0, 0);
+        let (text, _) = render_attendance_dashboard(42, &sched, &state);
+        assert!(text.contains("• Status: <b>Not Started</b>"));
+        assert!(text.contains("• Record: <i>no classes held yet</i>"));
+        assert!(!text.contains("100.0%"));
+        assert!(!text.contains("0/0"));
+    }
+
+    #[test]
+    fn dashboard_healthy_course_shows_safe_bunks() {
+        let sched = att_sched(&[("CSE-4136", "Computer Security")]);
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4136", 8, 1);
+        let (text, _) = render_attendance_dashboard(42, &sched, &state);
+        assert!(text.contains("88.9%"));
+        assert!(text.contains("• Safe Bunks: <b>1</b>"));
+    }
+
+    #[test]
+    fn dashboard_recovery_says_consecutive() {
+        let sched = att_sched(&[("CSE-4101", "Artificial Intelligence")]);
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4101", 3, 5);
+        let (text, _) = render_attendance_dashboard(42, &sched, &state);
+        assert!(text.contains("12</b> consecutive classes"));
+        assert!(text.contains("Non-Collegiate: <b>5</b>"));
+    }
+
+    #[test]
+    fn dashboard_orders_by_course_code() {
+        let sched = att_sched(&[
+            ("CSE-4136", "Security"),
+            ("CSE-4101", "AI"),
+            ("SS-4103", "Business"),
+        ]);
+        let state = RoutineState::default();
+        let (text, _) = render_attendance_dashboard(42, &sched, &state);
+        let p_ai = text.find("CSE-4101").expect("CSE-4101 found");
+        let p_sec = text.find("CSE-4136").expect("CSE-4136 found");
+        let p_biz = text.find("SS-4103").expect("SS-4103 found");
+        assert!(p_ai < p_sec);
+        assert!(p_sec < p_biz);
+    }
+
+    #[test]
+    fn dashboard_all_courses_rendered() {
+        let codes = [
+            "CSE-4101", "CSE-4102", "CSE-4111", "CSE-4113", "CSE-4125", "CSE-4136", "CSE-4155",
+            "SS-4103",
+        ];
+        let sched = att_sched(
+            &codes
+                .iter()
+                .map(|&c| (c, "Course Title"))
+                .collect::<Vec<_>>(),
+        );
+        let state = RoutineState::default();
+        let (text, _) = render_attendance_dashboard(42, &sched, &state);
+        for &code in &codes {
+            assert_eq!(text.matches(&format!("<b>{code}:")).count(), 1);
+        }
     }
 }
