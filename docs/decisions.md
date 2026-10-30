@@ -35,6 +35,7 @@ This document logs architectural and operational choices that govern the codebas
 **Decision.** Releases use annotated git tags named after the release title (`v0.3.X — Title`) and publish notes via GitHub Releases without attaching compiled binary assets or tracking `CHANGELOG.md`.
 **Why.** Keeps the repository lean and minimal for a self-hosted single-maintainer project built from source via Cargo and Python uv.
 **Rules out.** Bloating git history with binary release artifacts or duplicating notes across changelogs.
+**Superseded by.** 2026-10-30 — the annotated tag carries the notes; the GitHub Releases tab is retired.
 **Revisit if.** Pre-compiled distribution packages (e.g., Debian packages or Homebrew formulae) are distributed.
 
 ### 2026-10-29 — Attendance extraction relies exclusively on the course grid
@@ -93,5 +94,12 @@ This document logs architectural and operational choices that govern the codebas
 **What already exists.** `academic-routine export --until YYYY-MM-DD` applies an `UNTIL` boundary (`src/cli.rs:139-141`); the weekly unit simply does not pass it.
 **Open question.** Add `--until` to the sync unit, or add a `semester_end_date` source to state.
 **Revisit if.** The portal publishes an academic calendar, or a term end date is recorded in state.
+
+### 2026-10-30 — Release notes live in the annotated tag; GitHub Releases are retired
+
+**Decision.** A release is an annotated tag whose message is the complete release note: a subject line carrying the impact, an `Impact:` line naming what has to be rebuilt or restarted, and change bullets. Nothing is published to the GitHub Releases tab, and no `CHANGELOG.md` exists. Tags created before this date (`v0.2.0`–`v0.3.2`) were migrated once: their GitHub Release bodies were copied verbatim into the tag annotation, the tags re-created with `--cleanup=whitespace`, force-pushed, and the releases deleted.
+**Why.** The tag message and the release title were byte-identical, every release body restated the upgrade matrix that belongs in `operations.md` §10, and the Releases page was a projection of facts already stored elsewhere. A tag is immutable, readable offline with `git show`, and survives a move off GitHub; a checked-in changelog would be a mutable document describing immutable events.
+**Rules out.** `gh release create`, `--notes-file` as a second artifact, a maintained `CHANGELOG.md`, and per-release "Upgrading" sections. It also rules out moving tags: the migration above is the only re-annotation to date.
+**Revisit if.** Releases gain downloadable assets, a second maintainer, or automated publishing.
 
 *Last reviewed against v0.3.2 (2026-10-29)*

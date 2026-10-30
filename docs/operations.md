@@ -141,25 +141,57 @@ The daemon embeds an HTTP health server:
 
 ## 9. Release Procedure
 
+A release is an annotated tag. Nothing else is published: no GitHub Release, no `CHANGELOG.md`, no
+binary asset. The tag body is the release record and is readable offline with `git show`.
+
 When cutting a new patch or minor release:
 
-1. Update version string in `Cargo.toml` and `pyproject.toml`.
-2. Commit changes and push `main` branch to remote.
+1. Update the version string in `Cargo.toml` and `pyproject.toml`.
+2. Commit the change and push `main`:
+   ```bash
+   git push origin main
+   ```
 3. Confirm GitHub Actions CI completes green:
    ```bash
    gh run list --limit 1
    ```
 4. **Documentation Gate:** If the release changes behavior, paths, flags, or contracts, update the affected `docs/` file and its `Last reviewed against vX.Y.Z` stamp **in the same commit**. The release is not ready while `git diff` still shows stale docs.
-5. Create an annotated git tag named after the release title:
+5. Write the release notes as the annotated tag body. Draft the file first — the tag is write-once, and a typo can only be repaired by moving a tag, which this procedure forbids:
    ```bash
-   git tag -a v0.3.X -m "v0.3.X — Release summary title"
-   git push origin v0.3.X
+   $EDITOR /tmp/v0.3.3-notes.md
+   git tag -a v0.3.3 -F /tmp/v0.3.3-notes.md
+   git push origin v0.3.3
    ```
-6. Publish release notes via GitHub CLI:
-   ```bash
-   gh release create v0.3.X --title "v0.3.X — Release summary title" --notes-file /tmp/release-notes.md
-   ```
-7. **Release Constraints:** No binary assets attached to the release; no `CHANGELOG.md` file in the repository; never modify or delete existing tags (`v0.3.0`, `v0.3.1`, `v0.3.2`).
+6. **Release Constraints:** No GitHub Release is published (`gh release create` is not used); no binary assets; no `CHANGELOG.md` file in the repository; never modify, re-point, or delete an existing tag.
+
+### Release Note Template
+
+```
+v0.3.3 — one-line summary; impact in plain words
+
+Impact: rust · rebuild + restart · schema 2 · no scraper change
+
+- What changed, and the one-line reason.
+- ...
+
+Full diff: https://github.com/zaheen4/academic-routine/compare/v0.3.2...v0.3.3
+```
+
+The first line becomes the tag subject, which is all `git tag -n` prints, so it must carry the impact
+rather than only the title. The `Impact:` line answers the only question an upgrade asks — what has to
+be rebuilt, restarted, or re-read — and is the one thing commit history cannot answer. Do not add an
+upgrade procedure or a test summary to the notes: the procedure lives in §10, and test counts live in
+the commit body.
+
+### Reading the Release History
+
+```bash
+git tag -l --sort=v:refname --format='%(refname:short)%n%(contents)%n'   # full history
+git show v0.3.2                                                          # a single release
+```
+
+Tags created before 2026-10-30 were re-annotated once to absorb their GitHub Release bodies; this is
+described in [`decisions.md`](decisions.md). No tag has moved since.
 
 ## 10. Upgrade Procedure
 
