@@ -2,7 +2,9 @@
 
 use crate::bot::handlers::{escape_html, BotContext};
 use crate::model::day::{academic_now, current_academic_day};
-use crate::model::next_daily_time;
+use crate::model::{
+    next_daily_time, AttendanceRecord, AttendanceStatus, CourseEntry, DayOfWeek, RoutineState,
+};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
@@ -26,6 +28,72 @@ pub async fn start_morning_scheduler(bot: Bot, target_chat_id: i64, ctx: Arc<Bot
         // Sleep 15 seconds to ensure we do not double-trigger within the same minute
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
     }
+}
+
+/// Formats the single-line attendance summary for a course in the morning briefing.
+fn format_attendance_line(rec: &AttendanceRecord) -> String {
+    if rec.total() == 0 {
+        return "     📊 not started\n".to_string();
+    }
+    let pct = rec.percentage();
+    let base = format!("     📊 {}/{} · {:.1}%", rec.attended, rec.total(), pct);
+    match rec.status() {
+        AttendanceStatus::Collegiate => {
+            format!("{base} · {} spare\n", rec.safe_bunks())
+        }
+        AttendanceStatus::NonCollegiate => {
+            format!("{base} · NC · +{} to 75%\n", rec.needed_for_collegiate())
+        }
+        AttendanceStatus::DisCollegiate => {
+            format!("{base} · DC · +{} to 75%\n", rec.needed_for_collegiate())
+        }
+    }
+}
+
+/// Renders the 06:00 briefing for one chat.
+///
+/// Pure: takes the day's classes and the state snapshot, returns the HTML message body.
+fn render_morning_briefing(
+    chat_id: i64,
+    today: DayOfWeek,
+    classes: &[&CourseEntry],
+    state: &RoutineState,
+) -> String {
+    let section_badge = match state.get_user_section(chat_id) {
+        Some(sec) if !sec.eq_ignore_ascii_case("all") => format!(" • Section <b>{sec}</b>"),
+        _ => String::new(),
+    };
+
+    let mut msg = format!(
+        "🌅 <b>Good Morning! Academic Daily Briefing</b>{}\n\n\
+         Today is <b>{}</b> — you have <b>{}</b> class(es) scheduled:\n\n",
+        section_badge,
+        today.full_name(),
+        classes.len()
+    );
+
+    for (i, c) in classes.iter().enumerate() {
+        let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
+        msg.push_str(&format!(
+            "{}. <b>{}</b> | Room <b>{}</b>\n   └ <code>{}</code>: <b>{}</b>{}\n",
+            i + 1,
+            escape_html(&c.time_slot.format_12h()),
+            escape_html(&c.room),
+            escape_html(&c.code),
+            escape_html(&c.title),
+            lab_badge
+        ));
+        if !c.teacher.name.is_empty() {
+            msg.push_str(&format!("     👤 {}\n", escape_html(&c.teacher.name)));
+        }
+        if let Some(rec) = state.get_attendance(chat_id, &c.code) {
+            msg.push_str(&format_attendance_line(rec));
+        }
+        msg.push('\n');
+    }
+
+    msg.push_str("💡 <i>Have a productive day! Send /today or /next anytime for updates.</i>");
+    msg
 }
 
 async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotContext>) {
@@ -82,37 +150,7 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
             continue; // Don't disturb on days without classes for this section
         }
 
-        let section_badge = match user_state.get_user_section(cid) {
-            Some(sec) if !sec.eq_ignore_ascii_case("all") => format!(" • Section <b>{sec}</b>"),
-            _ => String::new(),
-        };
-
-        let mut msg = format!(
-            "🌅 <b>Good Morning! Academic Daily Briefing</b>{}\n\n\
-             Today is <b>{}</b> — you have <b>{}</b> class(es) scheduled:\n\n",
-            section_badge,
-            today.full_name(),
-            classes.len()
-        );
-
-        for (i, c) in classes.iter().enumerate() {
-            let lab_badge = if c.is_lab() { " 🔬 <i>[LAB]</i>" } else { "" };
-            msg.push_str(&format!(
-                "{}. <b>{}</b> | Room <b>{}</b>\n   └ <code>{}</code>: <b>{}</b>{}\n",
-                i + 1,
-                escape_html(&c.time_slot.format_12h()),
-                escape_html(&c.room),
-                escape_html(&c.code),
-                escape_html(&c.title),
-                lab_badge
-            ));
-            if !c.teacher.name.is_empty() {
-                msg.push_str(&format!("     👤 {}\n", escape_html(&c.teacher.name)));
-            }
-            msg.push('\n');
-        }
-
-        msg.push_str("💡 <i>Have a productive day! Send /today or /next anytime for updates.</i>");
+        let msg = render_morning_briefing(cid, today, &classes, &user_state);
 
         let send_res = bot
             .send_message(ChatId(cid), msg)
@@ -271,6 +309,7 @@ pub async fn start_class_reminder_daemon(bot: Bot, target_chat_id: i64, ctx: Arc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{TeacherContact, TimeSlot};
 
     #[test]
     fn test_reminder_due_diff() {
@@ -280,5 +319,153 @@ mod tests {
         assert_eq!(reminder_due_diff(600, 600), None);
         assert_eq!(reminder_due_diff(600, 601), None);
         assert_eq!(reminder_due_diff(600, 569), None);
+    }
+
+    fn entry(code: &str, title: &str, day: DayOfWeek) -> CourseEntry {
+        CourseEntry::new(
+            code,
+            title,
+            "B",
+            day,
+            TimeSlot::from_hms(9, 15, 10, 30).expect("valid slot"),
+            "120",
+            TeacherContact::new("Test Teacher", None, None),
+        )
+    }
+
+    fn mock_state() -> RoutineState {
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4101", 3, 5);
+        state
+    }
+
+    #[test]
+    fn briefing_includes_attendance_line() {
+        let state = mock_state();
+        let c = entry("CSE-4101", "Artificial Intelligence", DayOfWeek::Mon);
+        let out = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state);
+        assert!(out.contains("📊 3/8 · 37.5% · DC · +12 to 75%"));
+    }
+
+    #[test]
+    fn briefing_attendance_zero_total_is_not_started() {
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4102", 0, 0);
+        let c = entry("CSE-4102", "Math", DayOfWeek::Mon);
+        let out = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state);
+        assert!(out.contains("📊 not started"));
+        assert!(!out.contains("100.0%"));
+    }
+
+    #[test]
+    fn briefing_omits_attendance_without_records() {
+        let state = RoutineState::default();
+        let c = entry("CSE-4101", "Artificial Intelligence", DayOfWeek::Mon);
+        let out = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state);
+        assert!(!out.contains("📊"));
+        let expected = "\
+🌅 <b>Good Morning! Academic Daily Briefing</b>\n\n\
+Today is <b>Monday</b> — you have <b>1</b> class(es) scheduled:\n\n\
+1. <b>09:15 AM - 10:30 AM</b> | Room <b>120</b>\n   \
+└ <code>CSE-4101</code>: <b>Artificial Intelligence</b>\n     \
+👤 Test Teacher\n\n\
+💡 <i>Have a productive day! Send /today or /next anytime for updates.</i>";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn briefing_healthy_course_shows_spare() {
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4136", 8, 1);
+        let c = entry("CSE-4136", "Computer Security", DayOfWeek::Mon);
+        let out = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state);
+        assert!(out.contains("📊 8/9 · 88.9% · 1 spare"));
+    }
+
+    #[test]
+    fn briefing_boundary_course_shows_zero_spare() {
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4136", 9, 3);
+        let c = entry("CSE-4136", "Computer Security", DayOfWeek::Mon);
+        let out = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state);
+        assert!(out.contains("📊 9/12 · 75.0% · 0 spare"));
+    }
+
+    #[test]
+    fn briefing_non_collegiate_shows_nc() {
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4136", 6, 3);
+        let c = entry("CSE-4136", "Computer Security", DayOfWeek::Mon);
+        let out = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state);
+        assert!(out.contains("📊 6/9 · 66.7% · NC · +3 to 75%"));
+    }
+
+    #[test]
+    fn briefing_golden_monday() {
+        const GOLDEN_MONDAY_BRIEFING: &str = "\
+🌅 <b>Good Morning! Academic Daily Briefing</b>\n\n\
+Today is <b>Monday</b> — you have <b>3</b> class(es) scheduled:\n\n\
+1. <b>09:15 AM - 10:30 AM</b> | Room <b>120</b>\n   \
+└ <code>CSE-4101</code>: <b>Artificial Intelligence</b>\n     \
+👤 Utpol Kanti Das\n     \
+📊 3/8 · 37.5% · DC · +12 to 75%\n\n\
+2. <b>10:30 AM - 01:00 PM</b> | Room <b>AC-131</b>\n   \
+└ <code>CSE-4111</code>: <b>Artificial Intelligence Lab</b> 🔬 <i>[LAB]</i>\n     \
+👤 Md. Abul Basar\n     \
+📊 3/6 · 50.0% · DC · +6 to 75%\n\n\
+3. <b>01:30 PM - 02:45 PM</b> | Room <b>204</b>\n   \
+└ <code>CSE-4125</code>: <b>Introduction to Machine Learning</b>\n     \
+👤 Tanvir Ahmed\n     \
+📊 4/8 · 50.0% · DC · +8 to 75%\n\n\
+💡 <i>Have a productive day! Send /today or /next anytime for updates.</i>";
+
+        let mut state = RoutineState::default();
+        state.set_attendance(42, "CSE-4101", 3, 5);
+        state.set_attendance(42, "CSE-4111", 3, 3);
+        state.set_attendance(42, "CSE-4125", 4, 4);
+
+        let c1 = CourseEntry::new(
+            "CSE-4101",
+            "Artificial Intelligence",
+            "B",
+            DayOfWeek::Mon,
+            TimeSlot::from_hms(9, 15, 10, 30).unwrap(),
+            "120",
+            TeacherContact::new("Utpol Kanti Das", None, None),
+        );
+        let c2 = CourseEntry::new(
+            "CSE-4111",
+            "Artificial Intelligence Lab",
+            "B2",
+            DayOfWeek::Mon,
+            TimeSlot::from_hms(10, 30, 13, 0).unwrap(),
+            "AC-131",
+            TeacherContact::new("Md. Abul Basar", None, None),
+        );
+        let c3 = CourseEntry::new(
+            "CSE-4125",
+            "Introduction to Machine Learning",
+            "B",
+            DayOfWeek::Mon,
+            TimeSlot::from_hms(13, 30, 14, 45).unwrap(),
+            "204",
+            TeacherContact::new("Tanvir Ahmed", None, None),
+        );
+
+        let out = render_morning_briefing(42, DayOfWeek::Mon, &[&c1, &c2, &c3], &state);
+        assert_eq!(out, GOLDEN_MONDAY_BRIEFING);
+    }
+
+    #[test]
+    fn briefing_section_badge_only_when_set() {
+        let mut state_with_badge = RoutineState::default();
+        state_with_badge.set_user_section(42, "B2");
+        let c = entry("CSE-4101", "Artificial Intelligence", DayOfWeek::Mon);
+        let out_with_badge = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state_with_badge);
+        assert!(out_with_badge.contains(" • Section <b>B2</b>"));
+
+        let state_no_badge = RoutineState::default();
+        let out_no_badge = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state_no_badge);
+        assert!(!out_no_badge.contains("Section"));
     }
 }
