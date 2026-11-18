@@ -47,6 +47,65 @@ fn resolve_ics_path() -> PathBuf {
     output_ics
 }
 
+/// Regenerates the local `.ics` from the routine plus the current completion list.
+///
+/// The bot rewrites the calendar on every state change; the CLI did not, so
+/// `complete` hid a course from every read command while the file already on
+/// disk — the one a phone calendar subscribes to — still listed it. Publishing
+/// stays explicit: this must work offline, so the Gist is only touched by
+/// `sync-gist`.
+fn regenerate_calendar(cli: &Cli, store: &StateStore) -> Result<(), CliError> {
+    let routine_path = match resolve_routine_path(cli.file.as_ref()) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            println!(
+                "   {} No routine JSON found; calendar not regenerated.",
+                "⚠️".yellow()
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(CliError::new(format!("{} {e}", "❌".red().bold())));
+        }
+    };
+
+    let raw = match load_routine_file(&routine_path) {
+        Ok(sched) => sched,
+        Err(e) => {
+            return Err(CliError::new(format!(
+                "{} Failed to parse routine from {}: {e}",
+                "❌".red(),
+                routine_path.display()
+            )));
+        }
+    };
+
+    let state = store.read();
+    let mut sched = raw.filter_active(&state.dropped_courses);
+    if let Some(ref sec) = cli.section {
+        sched = sched.filter_section(sec);
+    }
+
+    let ics_path = resolve_ics_path();
+    export_ics_file(&sched, &ics_path, state.semester_end_date)
+        .map_err(|e| CliError::new(format!("{} Failed to write .ics file: {e}", "❌".red())))?;
+
+    println!(
+        "   {} Regenerated {} ({} classes)",
+        "📅".green().bold(),
+        ics_path.display().to_string().cyan(),
+        sched.entries.len()
+    );
+    if state.gist_id.is_some() {
+        println!(
+            "   {} Gist feed unchanged; run {} to publish.",
+            "ℹ️".cyan(),
+            "academic-routine sync-gist".yellow()
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     dotenvy::dotenv().ok();
@@ -148,32 +207,32 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                     "ℹ️".cyan(),
                     code.to_uppercase().bold()
                 );
-                return Ok(());
+            } else {
+                match store.update(|s| (s.complete_course(code), s.dropped_courses.clone())) {
+                    Ok((true, dropped)) => {
+                        println!(
+                            "{} Marked course {} as completed. Excluded from schedules and calendar exports.",
+                            "🏁".green().bold(),
+                            code.to_uppercase().bold()
+                        );
+                        println!("   Active completed courses: {:?}", dropped);
+                    }
+                    Ok((false, _)) => {
+                        println!(
+                            "{} Course {} is already marked as completed.",
+                            "ℹ️".cyan(),
+                            code.to_uppercase().bold()
+                        );
+                    }
+                    Err(e) => {
+                        return Err(CliError::new(format!(
+                            "{} Failed to save state: {e}",
+                            "❌".red()
+                        )));
+                    }
+                }
             }
-            match store.update(|s| (s.complete_course(code), s.dropped_courses.clone())) {
-                Ok((true, dropped)) => {
-                    println!(
-                        "{} Marked course {} as completed. Excluded from schedules and calendar exports.",
-                        "🏁".green().bold(),
-                        code.to_uppercase().bold()
-                    );
-                    println!("   Active completed courses: {:?}", dropped);
-                }
-                Ok((false, _)) => {
-                    println!(
-                        "{} Course {} is already marked as completed.",
-                        "ℹ️".cyan(),
-                        code.to_uppercase().bold()
-                    );
-                }
-                Err(e) => {
-                    return Err(CliError::new(format!(
-                        "{} Failed to save state: {e}",
-                        "❌".red()
-                    )));
-                }
-            }
-            return Ok(());
+            return regenerate_calendar(&cli, &store);
         }
         Some(Commands::Resume { code }) | Some(Commands::Restore { code }) => {
             if store.with_state(|s| !s.is_dropped(code)) {
@@ -182,31 +241,31 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                     "ℹ️".yellow(),
                     code.to_uppercase().bold()
                 );
-                return Ok(());
+            } else {
+                match store.update(|s| s.resume_course(code)) {
+                    Ok(true) => {
+                        println!(
+                            "{} Resumed course {}. It will now appear in your schedule and calendar exports.",
+                            "✅".green().bold(),
+                            code.to_uppercase().bold()
+                        );
+                    }
+                    Ok(false) => {
+                        println!(
+                            "{} Course {} was not in the completed list.",
+                            "ℹ️".yellow(),
+                            code.to_uppercase().bold()
+                        );
+                    }
+                    Err(e) => {
+                        return Err(CliError::new(format!(
+                            "{} Failed to save state: {e}",
+                            "❌".red()
+                        )));
+                    }
+                }
             }
-            match store.update(|s| s.resume_course(code)) {
-                Ok(true) => {
-                    println!(
-                        "{} Resumed course {}. It will now appear in your schedule and calendar exports.",
-                        "✅".green().bold(),
-                        code.to_uppercase().bold()
-                    );
-                }
-                Ok(false) => {
-                    println!(
-                        "{} Course {} was not in the completed list.",
-                        "ℹ️".yellow(),
-                        code.to_uppercase().bold()
-                    );
-                }
-                Err(e) => {
-                    return Err(CliError::new(format!(
-                        "{} Failed to save state: {e}",
-                        "❌".red()
-                    )));
-                }
-            }
-            return Ok(());
+            return regenerate_calendar(&cli, &store);
         }
         Some(Commands::Completed) | Some(Commands::Dropped) => {
             let state = store.read();
