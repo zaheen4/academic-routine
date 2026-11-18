@@ -16,6 +16,28 @@ use teloxide::prelude::*;
 use teloxide::types::{CallbackQuery, InlineKeyboardMarkup, ParseMode};
 use teloxide::utils::command::BotCommands;
 
+/// User-facing text for a state write that failed. Nothing was persisted, so claiming
+/// success here would be a lie the user only discovers later.
+const STATE_SAVE_FAILED: &str =
+    "⚠️ <b>Could not save that — nothing was written.</b>\n\nYour previous data is unchanged. Please try again.";
+
+/// Result of a state mutation, split into "persisted" and "failed" so no call site can
+/// silently fall back to a default value and then report success.
+enum Saved<T> {
+    Ok(T),
+    Failed,
+}
+
+fn classify_save<T, E: std::fmt::Display>(result: Result<T, E>) -> Saved<T> {
+    match result {
+        Ok(value) => Saved::Ok(value),
+        Err(error) => {
+            eprintln!("State write failed: {error}");
+            Saved::Failed
+        }
+    }
+}
+
 /// 🎓 University Routine Assistant Commands:
 #[derive(BotCommands, Clone, Debug, PartialEq, Eq)]
 #[command(rename_rule = "lowercase")]
@@ -982,9 +1004,10 @@ pub async fn handle_command(
             .as_ref()
             .map(|u| format!("@{u}"))
             .unwrap_or_else(|| user.first_name.clone());
-        let _ = ctx.store.update(|state| {
-            state.touch_user(chat_id.0, Some(&handle));
-        });
+        let _ = classify_save(
+            ctx.store
+                .update(|state| state.touch_user(chat_id.0, Some(&handle))),
+        );
     }
 
     match cmd {
@@ -1062,9 +1085,18 @@ pub async fn handle_command(
                     "ALL" | "*" => "All",
                     _ => &clean,
                 };
-                let _ = ctx.store.update(|state| {
-                    state.set_user_section(chat_id.0, chosen);
-                });
+                match classify_save(
+                    ctx.store
+                        .update(|state| state.set_user_section(chat_id.0, chosen)),
+                ) {
+                    Saved::Ok(()) => {}
+                    Saved::Failed => {
+                        bot.send_message(chat_id, STATE_SAVE_FAILED)
+                            .parse_mode(ParseMode::Html)
+                            .await?;
+                        return Ok(());
+                    }
+                }
 
                 let state = ctx.store.read();
                 let (text, markup) = render_section_card(chat_id.0, &state);
@@ -1103,10 +1135,18 @@ pub async fn handle_command(
                     let missed = parts[3].parse::<u32>();
                     match (attended, missed) {
                         (Ok(att), Ok(mis)) => {
-                            let rec = ctx
-                                .store
-                                .update(|s| s.set_attendance(chat_id.0, &code, att, mis))
-                                .unwrap_or_default();
+                            let rec = match classify_save(
+                                ctx.store
+                                    .update(|s| s.set_attendance(chat_id.0, &code, att, mis)),
+                            ) {
+                                Saved::Ok(rec) => rec,
+                                Saved::Failed => {
+                                    bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                        .parse_mode(ParseMode::Html)
+                                        .await?;
+                                    return Ok(());
+                                }
+                            };
                             let msg = format!(
                                 "✅ <b>Attendance record updated for <code>{}</code>!</b>\n\
                                  • Record: <b>{}</b> attended / <b>{}</b> missed (Total: {})\n\
@@ -1146,7 +1186,17 @@ pub async fn handle_command(
                 let parts: Vec<&str> = clean.split_whitespace().collect();
                 if parts.len() >= 2 {
                     let code = parts[1].to_uppercase();
-                    let _ = ctx.store.update(|s| s.reset_attendance(chat_id.0, &code));
+                    let _ = match classify_save(
+                        ctx.store.update(|s| s.reset_attendance(chat_id.0, &code)),
+                    ) {
+                        Saved::Ok(reset) => reset,
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    };
                     bot.send_message(
                         chat_id,
                         format!(
@@ -1157,7 +1207,15 @@ pub async fn handle_command(
                     .parse_mode(ParseMode::Html)
                     .await?;
                 } else {
-                    let _ = ctx.store.update(|s| s.reset_all_attendance(chat_id.0));
+                    match classify_save(ctx.store.update(|s| s.reset_all_attendance(chat_id.0))) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     bot.send_message(chat_id, "🔄 Reset all attendance records for this chat.")
                         .parse_mode(ParseMode::Html)
                         .await?;
@@ -1203,10 +1261,18 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let rec: AttendanceRecord = ctx
-                .store
-                .update(|s| s.record_attendance(chat_id.0, &clean, true))
-                .unwrap_or_default();
+            let rec: AttendanceRecord = match classify_save(
+                ctx.store
+                    .update(|s| s.record_attendance(chat_id.0, &clean, true)),
+            ) {
+                Saved::Ok(rec) => rec,
+                Saved::Failed => {
+                    bot.send_message(chat_id, STATE_SAVE_FAILED)
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                    return Ok(());
+                }
+            };
             let status = rec.status();
             let bunks_info = match status {
                 AttendanceStatus::Collegiate => {
@@ -1267,10 +1333,18 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let rec: AttendanceRecord = ctx
-                .store
-                .update(|s| s.record_attendance(chat_id.0, &clean, false))
-                .unwrap_or_default();
+            let rec: AttendanceRecord = match classify_save(
+                ctx.store
+                    .update(|s| s.record_attendance(chat_id.0, &clean, false)),
+            ) {
+                Saved::Ok(rec) => rec,
+                Saved::Failed => {
+                    bot.send_message(chat_id, STATE_SAVE_FAILED)
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                    return Ok(());
+                }
+            };
             let status = rec.status();
             let bunks_info = match status {
                 AttendanceStatus::Collegiate => {
@@ -1486,10 +1560,18 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let newly_dropped = ctx
-                .store
-                .update(|state| state.drop_course_for(chat_id.0, &clean_code))
-                .unwrap_or(false);
+            let newly_dropped = match classify_save(
+                ctx.store
+                    .update(|state| state.drop_course_for(chat_id.0, &clean_code)),
+            ) {
+                Saved::Ok(newly_dropped) => newly_dropped,
+                Saved::Failed => {
+                    bot.send_message(chat_id, STATE_SAVE_FAILED)
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                    return Ok(());
+                }
+            };
             if newly_dropped {
                 let resp = format!(
                     "🏁 <b>Marked course <code>{}</code> as completed for your chat!</b>\n\
@@ -1526,10 +1608,18 @@ pub async fn handle_command(
                 return Ok(());
             }
 
-            let newly_resumed = ctx
-                .store
-                .update(|state| state.resume_course_for(chat_id.0, &clean_code))
-                .unwrap_or(false);
+            let newly_resumed = match classify_save(
+                ctx.store
+                    .update(|state| state.resume_course_for(chat_id.0, &clean_code)),
+            ) {
+                Saved::Ok(newly_resumed) => newly_resumed,
+                Saved::Failed => {
+                    bot.send_message(chat_id, STATE_SAVE_FAILED)
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                    return Ok(());
+                }
+            };
             if newly_resumed {
                 let resp = format!(
                     "✅ <b>Resumed course <code>{}</code> for your chat!</b>\n\
@@ -1613,9 +1703,18 @@ pub async fn handle_command(
             let clean = action.trim().to_lowercase();
             match clean.as_str() {
                 "off" | "pause" | "mute" | "stop" => {
-                    let _ = ctx
-                        .store
-                        .update(|s| s.set_user_morning_alerts(chat_id.0, false));
+                    match classify_save(
+                        ctx.store
+                            .update(|s| s.set_user_morning_alerts(chat_id.0, false)),
+                    ) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     bot.send_message(
                         chat_id,
                         "🔕 <b>6:00 AM Morning Briefings Muted!</b>\n\
@@ -1626,9 +1725,18 @@ pub async fn handle_command(
                     .await?;
                 }
                 "on" | "resume" | "unmute" | "start" => {
-                    let _ = ctx
-                        .store
-                        .update(|s| s.set_user_morning_alerts(chat_id.0, true));
+                    match classify_save(
+                        ctx.store
+                            .update(|s| s.set_user_morning_alerts(chat_id.0, true)),
+                    ) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     bot.send_message(
                         chat_id,
                         "🔔 <b>6:00 AM Morning Briefings Active!</b>\n\
@@ -1665,9 +1773,18 @@ pub async fn handle_command(
             let clean = action.trim().to_lowercase();
             match clean.as_str() {
                 "off" | "pause" | "mute" | "stop" => {
-                    let _ = ctx
-                        .store
-                        .update(|s| s.set_user_preclass_reminders(chat_id.0, false));
+                    match classify_save(
+                        ctx.store
+                            .update(|s| s.set_user_preclass_reminders(chat_id.0, false)),
+                    ) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     bot.send_message(
                         chat_id,
                         "🔕 <b>Pre-Class Reminders Disabled!</b>\n\
@@ -1678,9 +1795,18 @@ pub async fn handle_command(
                     .await?;
                 }
                 "on" | "resume" | "unmute" | "start" => {
-                    let _ = ctx
-                        .store
-                        .update(|s| s.set_user_preclass_reminders(chat_id.0, true));
+                    match classify_save(
+                        ctx.store
+                            .update(|s| s.set_user_preclass_reminders(chat_id.0, true)),
+                    ) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     bot.send_message(
                         chat_id,
                         "🔔 <b>Pre-Class Reminders Activated!</b>\n\
@@ -1724,7 +1850,15 @@ pub async fn handle_command(
                     || lower.starts_with("resume")
                     || lower.starts_with("stop")
                 {
-                    let _ = ctx.store.update(|s| s.set_vacation(false, None));
+                    match classify_save(ctx.store.update(|s| s.set_vacation(false, None))) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     let _ = ctx.regenerate_and_sync().await;
                     bot.send_message(
                         chat_id,
@@ -1734,7 +1868,15 @@ pub async fn handle_command(
                     .parse_mode(ParseMode::Html)
                     .await?;
                 } else if lower.starts_with("on") || lower.starts_with("start") {
-                    let _ = ctx.store.update(|s| s.set_vacation(true, None));
+                    match classify_save(ctx.store.update(|s| s.set_vacation(true, None))) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     let _ = ctx.regenerate_and_sync().await;
                     bot.send_message(
                         chat_id,
@@ -1748,7 +1890,17 @@ pub async fn handle_command(
                     let date_str = clean.trim_start_matches("until").trim();
                     match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                         Ok(until) => {
-                            let _ = ctx.store.update(|s| s.set_vacation(true, Some(until)));
+                            match classify_save(
+                                ctx.store.update(|s| s.set_vacation(true, Some(until))),
+                            ) {
+                                Saved::Ok(()) => {}
+                                Saved::Failed => {
+                                    bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                        .parse_mode(ParseMode::Html)
+                                        .await?;
+                                    return Ok(());
+                                }
+                            }
                             let _ = ctx.regenerate_and_sync().await;
                             bot.send_message(
                                 chat_id,
@@ -1803,9 +1955,18 @@ pub async fn handle_command(
                     || lower.starts_with("resume")
                     || lower.starts_with("stop")
                 {
-                    let _ = ctx
-                        .store
-                        .update(|s| s.set_user_vacation(chat_id.0, false, None));
+                    match classify_save(
+                        ctx.store
+                            .update(|s| s.set_user_vacation(chat_id.0, false, None)),
+                    ) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     let state = ctx.store.read();
                     let global_note = if state.is_vacation_active() {
                         "\n\n<i>📢 Note: University-wide semester break is currently active, so morning alerts will resume once the semester officially reopens.</i>"
@@ -1823,9 +1984,18 @@ pub async fn handle_command(
                     .parse_mode(ParseMode::Html)
                     .await?;
                 } else if lower.starts_with("on") || lower.starts_with("start") {
-                    let _ = ctx
-                        .store
-                        .update(|s| s.set_user_vacation(chat_id.0, true, None));
+                    match classify_save(
+                        ctx.store
+                            .update(|s| s.set_user_vacation(chat_id.0, true, None)),
+                    ) {
+                        Saved::Ok(()) => {}
+                        Saved::Failed => {
+                            bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                .parse_mode(ParseMode::Html)
+                                .await?;
+                            return Ok(());
+                        }
+                    }
                     bot.send_message(
                         chat_id,
                         "🏖️ <b>Personal Vacation / Snooze Activated!</b>\n\
@@ -1838,9 +2008,18 @@ pub async fn handle_command(
                     let date_str = clean.trim_start_matches("until").trim();
                     match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                         Ok(until) => {
-                            let _ = ctx
-                                .store
-                                .update(|s| s.set_user_vacation(chat_id.0, true, Some(until)));
+                            match classify_save(
+                                ctx.store
+                                    .update(|s| s.set_user_vacation(chat_id.0, true, Some(until))),
+                            ) {
+                                Saved::Ok(()) => {}
+                                Saved::Failed => {
+                                    bot.send_message(chat_id, STATE_SAVE_FAILED)
+                                        .parse_mode(ParseMode::Html)
+                                        .await?;
+                                    return Ok(());
+                                }
+                            }
                             bot.send_message(
                                 chat_id,
                                 format!(
@@ -2151,6 +2330,20 @@ pub fn escape_html(text: &str) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn failed_state_write_is_classified_as_failure() {
+        let outcome: Saved<u32> = classify_save(Err::<u32, String>("disk full".into()));
+        assert!(matches!(outcome, Saved::Failed));
+
+        let ok: Saved<u32> = classify_save(Ok::<u32, String>(7));
+        assert!(matches!(ok, Saved::Ok(7)));
+
+        // The failure text must not be mistakable for a success message.
+        assert!(STATE_SAVE_FAILED.contains("nothing was written"));
+        assert!(!STATE_SAVE_FAILED.contains('✅'));
+        assert!(!STATE_SAVE_FAILED.contains("Record:"));
+    }
 
     #[test]
     fn test_escape_html() {
