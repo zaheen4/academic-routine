@@ -9,10 +9,26 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+const ROUTINE_ICS_FILE: &str = "routine.ics";
+const ROUTINE_JSON_FILE: &str = "routine_data.json";
 const ROUTINE_META_FILENAME: &str = "routine_meta.json";
 const LEGACY_STATE_FILENAME: &str = "routine_state.json";
 
 const USER_AGENT: &str = concat!("academic-routine-engine/", env!("CARGO_PKG_VERSION"));
+
+/// Shared HTTP client with bounded timeouts so a stalled request cannot hang a sync.
+static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn client() -> &'static reqwest::Client {
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .user_agent(USER_AGENT)
+            .build()
+            .expect("failed to build HTTP client")
+    })
+}
 
 /// Builds the PATCH payload used to retry after a `422 Unprocessable Entity`.
 ///
@@ -48,20 +64,18 @@ fn resolve_github_token() -> Option<String> {
 /// delete it from legacy Gists. No private state is ever placed in this map.
 #[must_use]
 pub fn build_bundle_files(
-    ics_filename: &str,
     ics_content: &str,
-    json_filename: &str,
     json_content: &str,
     meta: &PublicRoutineMeta,
 ) -> serde_json::Value {
     let meta_json = serde_json::to_string_pretty(meta).unwrap_or_else(|_| "{}".to_string());
     let mut files = serde_json::Map::new();
     files.insert(
-        ics_filename.to_string(),
+        ROUTINE_ICS_FILE.to_string(),
         serde_json::json!({ "content": ics_content }),
     );
     files.insert(
-        json_filename.to_string(),
+        ROUTINE_JSON_FILE.to_string(),
         serde_json::json!({ "content": json_content }),
     );
     files.insert(
@@ -91,25 +105,10 @@ pub async fn sync_gist_bundle(
     let json_content = fs::read_to_string(json_path)
         .map_err(|e| format!("Failed to read JSON file at '{}': {e}", json_path.display()))?;
 
-    let ics_filename = ics_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("routine.ics");
-    let json_filename = json_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("routine_data.json");
-
-    let files = build_bundle_files(
-        ics_filename,
-        &ics_content,
-        json_filename,
-        &json_content,
-        meta,
-    );
+    let files = build_bundle_files(&ics_content, &json_content, meta);
 
     if let Some(token) = resolve_github_token() {
-        let client = reqwest::Client::new();
+        let client = client();
         let url = format!("https://api.github.com/gists/{gist_id}");
         let mut response = client
             .patch(&url)
@@ -139,7 +138,7 @@ pub async fn sync_gist_bundle(
         }
 
         if response.status().is_success() {
-            return Ok(feed_url(gist_id, ics_filename));
+            return Ok(feed_url(gist_id, ROUTINE_ICS_FILE));
         }
 
         let status = response.status();
@@ -151,8 +150,8 @@ pub async fn sync_gist_bundle(
     let meta_json = serde_json::to_string_pretty(meta)
         .map_err(|e| format!("Failed to serialize routine metadata: {e}"))?;
     for (filename, content) in [
-        (ics_filename, ics_content.as_str()),
-        (json_filename, json_content.as_str()),
+        (ROUTINE_ICS_FILE, ics_content.as_str()),
+        (ROUTINE_JSON_FILE, json_content.as_str()),
         (ROUTINE_META_FILENAME, meta_json.as_str()),
     ] {
         gh_gist_upsert(gist_id, filename, content)?;
@@ -160,7 +159,7 @@ pub async fn sync_gist_bundle(
     // Best-effort cleanup of the legacy state file; absence is fine.
     let _ = gh_gist_remove(gist_id, LEGACY_STATE_FILENAME);
 
-    Ok(feed_url(gist_id, ics_filename))
+    Ok(feed_url(gist_id, ROUTINE_ICS_FILE))
 }
 
 /// Pushes a single generated `.ics` calendar file to a GitHub Gist.
@@ -170,17 +169,13 @@ pub async fn sync_gist_bundle(
 pub async fn sync_gist_file(gist_id: &str, ics_path: &Path) -> Result<String, String> {
     let ics_content = fs::read_to_string(ics_path)
         .map_err(|e| format!("Failed to read .ics file at '{}': {e}", ics_path.display()))?;
-    let filename = ics_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("routine.ics");
 
     if let Some(token) = resolve_github_token() {
-        let client = reqwest::Client::new();
+        let client = client();
         let url = format!("https://api.github.com/gists/{gist_id}");
         let mut files = serde_json::Map::new();
         files.insert(
-            filename.to_string(),
+            ROUTINE_ICS_FILE.to_string(),
             serde_json::json!({ "content": ics_content }),
         );
         let response = client
@@ -194,7 +189,7 @@ pub async fn sync_gist_file(gist_id: &str, ics_path: &Path) -> Result<String, St
             .map_err(|e| format!("GitHub API network error: {e}"))?;
 
         if response.status().is_success() {
-            return Ok(feed_url(gist_id, filename));
+            return Ok(feed_url(gist_id, ROUTINE_ICS_FILE));
         }
 
         let status = response.status();
@@ -202,8 +197,8 @@ pub async fn sync_gist_file(gist_id: &str, ics_path: &Path) -> Result<String, St
         return Err(format!("GitHub API error (HTTP {status}): {body}"));
     }
 
-    gh_gist_upsert(gist_id, filename, &ics_content)?;
-    Ok(feed_url(gist_id, filename))
+    gh_gist_upsert(gist_id, ROUTINE_ICS_FILE, &ics_content)?;
+    Ok(feed_url(gist_id, ROUTINE_ICS_FILE))
 }
 
 fn feed_url(gist_id: &str, filename: &str) -> String {
@@ -324,10 +319,8 @@ fn sanitize_filename(name: &str) -> String {
 /// # Errors
 /// Returns an error message if the network request fails or the file is missing.
 pub async fn fetch_gist_routine_data(gist_id: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let token = std::env::var("GITHUB_TOKEN")
-        .or_else(|_| std::env::var("GH_TOKEN"))
-        .ok();
+    let client = client();
+    let token = resolve_github_token();
 
     // 1. GitHub REST API first (real-time content, no CDN cache delay).
     let api_url = format!("https://api.github.com/gists/{gist_id}");
@@ -344,7 +337,7 @@ pub async fn fetch_gist_routine_data(gist_id: &str) -> Result<String, String> {
             if let Ok(data) = response.json::<serde_json::Value>().await {
                 if let Some(content) = data
                     .get("files")
-                    .and_then(|files| files.get("routine_data.json"))
+                    .and_then(|files| files.get(ROUTINE_JSON_FILE))
                     .and_then(|file| file.get("content"))
                     .and_then(serde_json::Value::as_str)
                 {
@@ -360,7 +353,7 @@ pub async fn fetch_gist_routine_data(gist_id: &str) -> Result<String, String> {
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     let raw_url =
-        format!("https://gist.githubusercontent.com/raw/{gist_id}/routine_data.json?t={ts}");
+        format!("https://gist.githubusercontent.com/raw/{gist_id}/{ROUTINE_JSON_FILE}?t={ts}");
     let response = client
         .get(&raw_url)
         .header("User-Agent", USER_AGENT)
@@ -386,10 +379,8 @@ pub async fn fetch_gist_routine_data(gist_id: &str) -> Result<String, String> {
 /// Returns `Ok(None)` for legacy Gists without metadata; network failures are
 /// reported as errors so callers can distinguish "absent" from "unreachable".
 pub async fn fetch_gist_meta_data(gist_id: &str) -> Result<Option<PublicRoutineMeta>, String> {
-    let client = reqwest::Client::new();
-    let token = std::env::var("GITHUB_TOKEN")
-        .or_else(|_| std::env::var("GH_TOKEN"))
-        .ok();
+    let client = client();
+    let token = resolve_github_token();
 
     let api_url = format!("https://api.github.com/gists/{gist_id}");
     let mut request = client
@@ -448,13 +439,7 @@ mod tests {
 
     #[test]
     fn test_bundle_contains_only_public_files() {
-        let files = build_bundle_files(
-            "routine.ics",
-            "BEGIN:VCALENDAR",
-            "routine_data.json",
-            "{}",
-            &sample_meta(),
-        );
+        let files = build_bundle_files("BEGIN:VCALENDAR", "{}", &sample_meta());
         let object = files.as_object().unwrap();
         let names: Vec<&String> = object.keys().collect();
         assert!(names.contains(&&"routine.ics".to_string()));
@@ -466,14 +451,29 @@ mod tests {
     }
 
     #[test]
-    fn test_retry_payload_drops_only_the_legacy_deletion() {
-        let files = build_bundle_files(
-            "routine.ics",
-            "BEGIN:VCALENDAR",
-            "routine_data.json",
-            "{}",
-            &sample_meta(),
+    fn test_bundle_filenames_are_canonical() {
+        let files = build_bundle_files("ics", "{}", &sample_meta());
+        let mut names: Vec<&str> = files
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "routine.ics",
+                "routine_data.json",
+                "routine_meta.json",
+                "routine_state.json",
+            ]
         );
+    }
+
+    #[test]
+    fn test_retry_payload_drops_only_the_legacy_deletion() {
+        let files = build_bundle_files("BEGIN:VCALENDAR", "{}", &sample_meta());
 
         let payload = retry_payload_without_legacy(&files).expect("legacy key is present");
         let retried = payload["files"].as_object().unwrap();
@@ -489,13 +489,7 @@ mod tests {
 
     #[test]
     fn test_retry_payload_is_none_without_legacy_key() {
-        let mut files = build_bundle_files(
-            "routine.ics",
-            "BEGIN:VCALENDAR",
-            "routine_data.json",
-            "{}",
-            &sample_meta(),
-        );
+        let mut files = build_bundle_files("BEGIN:VCALENDAR", "{}", &sample_meta());
         files.as_object_mut().unwrap().remove("routine_state.json");
 
         assert!(retry_payload_without_legacy(&files).is_none());
@@ -505,7 +499,7 @@ mod tests {
     #[test]
     fn test_bundle_meta_has_no_pii() {
         let meta = sample_meta();
-        let files = build_bundle_files("routine.ics", "", "routine_data.json", "{}", &meta);
+        let files = build_bundle_files("", "{}", &meta);
         let serialized = serde_json::to_string(&files).unwrap();
         for forbidden in [
             "user_attendance",
