@@ -97,6 +97,20 @@ fn render_morning_briefing(
     msg
 }
 
+/// Whether today's briefing may be recorded as delivered.
+///
+/// Marks the day when nothing needed sending, or when at least one recipient
+/// received the briefing. It must NOT mark when every attempted send failed:
+/// the flag is per-day, so marking a total failure makes a restart or a manual
+/// trigger later that day silently do nothing, with no retry anywhere.
+///
+/// One success out of several attempts is enough. The flag cannot express
+/// per-recipient delivery, and retrying would re-send to everyone who already
+/// got it.
+fn should_mark_briefing_sent(attempted: usize, delivered: usize) -> bool {
+    delivered > 0 || attempted == 0
+}
+
 async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotContext>) {
     // Attempt automated refresh from Gist so briefings always reflect the latest routine
     if let Err(e) = ctx.refresh_from_gist().await {
@@ -132,6 +146,8 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
     }
 
     let today = current_academic_day();
+    let mut attempted = 0usize;
+    let mut delivered = 0usize;
 
     for &cid in &recipient_chats {
         if !state.is_morning_alerts_enabled(cid) || state.is_user_vacation_active(cid) {
@@ -151,6 +167,8 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
             continue; // Don't disturb on days without classes for this section
         }
 
+        attempted += 1;
+
         let msg = render_morning_briefing(cid, today, &classes, &user_state);
 
         let send_res = bot
@@ -158,16 +176,19 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
             .parse_mode(teloxide::types::ParseMode::Html)
             .await;
 
-        if let Err(ref e) = send_res {
-            let err_msg = e.to_string().to_lowercase();
-            if err_msg.contains("blocked by the user")
-                || err_msg.contains("chat not found")
-                || err_msg.contains("user is deactivated")
-            {
-                eprintln!("Chat {cid} blocked the bot or is invalid; muting morning alerts.");
-                let _ = ctx.store.update(|s| s.set_user_morning_alerts(cid, false));
-            } else {
-                eprintln!("Failed to send morning briefing to {cid}: {e}");
+        match send_res {
+            Ok(_) => delivered += 1,
+            Err(ref e) => {
+                let err_msg = e.to_string().to_lowercase();
+                if err_msg.contains("blocked by the user")
+                    || err_msg.contains("chat not found")
+                    || err_msg.contains("user is deactivated")
+                {
+                    eprintln!("Chat {cid} blocked the bot or is invalid; muting morning alerts.");
+                    let _ = ctx.store.update(|s| s.set_user_morning_alerts(cid, false));
+                } else {
+                    eprintln!("Failed to send morning briefing to {cid}: {e}");
+                }
             }
         }
 
@@ -175,9 +196,15 @@ async fn send_morning_briefing(bot: &Bot, target_chat_id: i64, ctx: &Arc<BotCont
         tokio::time::sleep(std::time::Duration::from_millis(35)).await;
     }
 
-    let _ = ctx
-        .store
-        .update(|s| s.mark_morning_briefing_sent(today_date));
+    if should_mark_briefing_sent(attempted, delivered) {
+        let _ = ctx
+            .store
+            .update(|s| s.mark_morning_briefing_sent(today_date));
+    } else {
+        eprintln!(
+            "⏰ Scheduler: briefing delivery failed for all {attempted} chat(s) today; leaving the day unmarked so it can be retried."
+        );
+    }
 }
 
 fn duration_until_next_6am() -> std::time::Duration {
@@ -468,5 +495,17 @@ Today is <b>Monday</b> — you have <b>3</b> class(es) scheduled:\n\n\
         let state_no_badge = RoutineState::default();
         let out_no_badge = render_morning_briefing(42, DayOfWeek::Mon, &[&c], &state_no_badge);
         assert!(!out_no_badge.contains("Section"));
+    }
+
+    #[test]
+    fn briefing_is_marked_unless_every_send_failed() {
+        // Nothing was due (all chats skipped) — the day is handled, not failed.
+        assert!(should_mark_briefing_sent(0, 0));
+        // Full and partial delivery both count; the flag cannot express per-chat state.
+        assert!(should_mark_briefing_sent(1, 1));
+        assert!(should_mark_briefing_sent(3, 1));
+        // Every send failed: must stay unmarked so a restart or manual trigger retries.
+        assert!(!should_mark_briefing_sent(3, 0));
+        assert!(!should_mark_briefing_sent(1, 0));
     }
 }
