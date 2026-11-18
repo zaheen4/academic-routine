@@ -1,6 +1,9 @@
 [Unit]
 Description=Academic Routine Assistant Telegram Bot & Scheduler Daemon
-After=network.target
+# No network ordering on purpose. This is a --user unit, and network.target is a
+# system-scope special unit, so ordering against it here is inert: it can never
+# delay this service. The startup retry covers the case where the network is not
+# up yet when the daemon starts.
 
 [Service]
 Type=simple
