@@ -1,6 +1,7 @@
 //! Scheduled morning briefings and proactive notifications.
 
-use crate::bot::handlers::{escape_html, BotContext};
+use crate::bot::handlers::BotContext;
+use crate::escape_html;
 use crate::model::day::{academic_now, current_academic_day};
 use crate::model::{
     next_daily_time, AttendanceRecord, AttendanceStatus, CourseEntry, DayOfWeek, RoutineState,

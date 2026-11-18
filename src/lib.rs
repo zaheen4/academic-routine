@@ -15,6 +15,7 @@ pub mod config;
 pub mod engine;
 pub mod exporters;
 pub mod model;
+mod text;
 
 pub use bot::{run_bot_daemon, BotContext, Command};
 pub use cli::{resolve_routine_path, resolve_write_target, Cli, Commands};
@@ -34,3 +35,4 @@ pub use model::{
     RoutineState, Schedule, ScheduleConflict, ScheduleDiff, ScheduleDiffItem, StateError,
     StateStore, TeacherContact, TimeSlot, TimeSlotError,
 };
+pub use text::escape_html;

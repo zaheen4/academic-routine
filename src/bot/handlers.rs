@@ -2,6 +2,7 @@
 
 use crate::bot::keyboards::*;
 use crate::engine::parser::load_routine_file;
+use crate::escape_html;
 use crate::exporters::ics::export_ics_file;
 use crate::model::course::{CourseEntry, TeacherContact};
 use crate::model::day::{academic_now, current_academic_day, next_academic_day, DayOfWeek};
@@ -398,9 +399,9 @@ pub fn render_today_card(sched: &Schedule, state: &RoutineState) -> (String, Inl
         text.push_str(&format!(
             "<code>{}</code> • <b>{}</b>{}\n<b>{}: {}</b>{}\n",
             c.time_slot.format_12h(),
-            c.room,
+            escape_html(&c.room),
             status_badge,
-            c.code,
+            escape_html(&c.code),
             escape_html(&c.title),
             lab_badge
         ));
@@ -449,10 +450,10 @@ pub fn render_next_card(sched: &Schedule, state: &RoutineState) -> (String, Inli
              {}",
             active.time_slot.format_12h(),
             mins_left,
-            active.code,
+            escape_html(&active.code),
             escape_html(&active.title),
             lab_badge,
-            active.room,
+            escape_html(&active.room),
             escape_html(&active.teacher.name),
             live_timestamp()
         );
@@ -474,10 +475,10 @@ pub fn render_next_card(sched: &Schedule, state: &RoutineState) -> (String, Inli
              {}",
             mins_until,
             next.time_slot.start().format("%I:%M %p"),
-            next.code,
+            escape_html(&next.code),
             escape_html(&next.title),
             lab_badge,
-            next.room,
+            escape_html(&next.room),
             escape_html(&next.teacher.name),
             live_timestamp()
         );
@@ -516,8 +517,8 @@ pub fn render_tomorrow_card(sched: &Schedule) -> (String, InlineKeyboardMarkup) 
         text.push_str(&format!(
             "<code>{}</code> • <b>{}</b>\n<b>{}: {}</b>{}\n",
             c.time_slot.format_12h(),
-            c.room,
-            c.code,
+            escape_html(&c.room),
+            escape_html(&c.code),
             escape_html(&c.title),
             lab_badge
         ));
@@ -564,8 +565,8 @@ pub fn render_routine_overview(sched: &Schedule) -> (String, InlineKeyboardMarku
                 "{} <code>{}</code> <b>{}</b>: {}{}\n",
                 branch,
                 c.time_slot.format_12h(),
-                c.room,
-                c.code,
+                escape_html(&c.room),
+                escape_html(&c.code),
                 lab_badge
             ));
         }
@@ -603,8 +604,8 @@ pub fn render_routine_day(sched: &Schedule, day: DayOfWeek) -> (String, InlineKe
         text.push_str(&format!(
             "<code>{}</code> • Room <b>{}</b>\n<b>{}: {}</b>{}\n",
             c.time_slot.format_12h(),
-            c.room,
-            c.code,
+            escape_html(&c.room),
+            escape_html(&c.code),
             escape_html(&c.title),
             lab_badge
         ));
@@ -673,12 +674,12 @@ pub fn render_teacher_profile(
             let lab_badge = if c.is_lab() { " 🔬" } else { "" };
             text.push_str(&format!(
                 "• <code>{}</code>: {}{}\n  └ {} {} (Room {})\n",
-                c.code,
+                escape_html(&c.code),
                 escape_html(&c.title),
                 lab_badge,
                 c.day.full_name(),
                 c.time_slot.format_12h(),
-                c.room
+                escape_html(&c.room)
             ));
         }
     }
@@ -794,7 +795,7 @@ pub fn render_status_card(
     let completed_count = state.dropped_for(chat_id.0).len();
     let gist_status = if let Some(ref gid) = state.gist_id {
         let short = &gid[..8.min(gid.len())];
-        format!("Linked (<code>{short}...</code>)")
+        format!("Linked (<code>{}...</code>)", escape_html(short))
     } else {
         "Not linked".to_string()
     };
@@ -836,7 +837,7 @@ pub fn render_section_card(chat_id: i64, state: &RoutineState) -> (String, Inlin
          <i>Tap a button below to switch your section:</i>\n\
          ───────────────────────────\n\
          {}",
-        active,
+        escape_html(active),
         live_timestamp()
     );
     (text, section_selector_keyboard(Some(active)))
@@ -855,7 +856,7 @@ pub fn render_attendance_dashboard(
     let mut text = format!(
         "📊 <b>Attendance Summary</b> (Section {})\n\
          ───────────────────────────\n",
-        user_sec
+        escape_html(user_sec)
     );
 
     if courses.is_empty() {
@@ -874,10 +875,10 @@ pub fn render_attendance_dashboard(
                     "<b>{}: {}</b>{}\n\
                      • Status: <i>no data</i>\n\
                      • <i>Log with</i> <code>/attend {}</code>\n\n",
-                    code,
+                    escape_html(code),
                     escape_html(title),
                     lab_badge,
-                    code
+                    escape_html(code)
                 ));
                 continue;
             };
@@ -888,7 +889,7 @@ pub fn render_attendance_dashboard(
                     "<b>{}: {}</b>{}\n\
                      • Status: <b>Not Started</b>\n\
                      • Record: <i>no classes held yet</i>\n\n",
-                    code,
+                    escape_html(code),
                     escape_html(title),
                     lab_badge
                 ));
@@ -902,7 +903,7 @@ pub fn render_attendance_dashboard(
                 "<b>{}: {}</b>{}\n\
                  • Status: <b>{}</b> ({:.1}%)\n\
                  • Record: <b>{}</b> attended / <b>{}</b> missed (Total: {})\n",
-                code,
+                escape_html(code),
                 escape_html(title),
                 lab_badge,
                 status,
@@ -969,7 +970,7 @@ pub fn render_calendar_subscription_card(gist_id: Option<&str>) -> (String, Inli
          <code>{}</code>\n\
          ───────────────────────────\n\
          {}",
-        url_feed,
+        escape_html(&url_feed),
         live_timestamp()
     );
 
@@ -1536,8 +1537,8 @@ pub async fn handle_command(
                         "• <b>{}</b> ({} classes)\n  📞 <code>{}</code> • ✉️ <code>{}</code>\n",
                         escape_html(name),
                         courses.len(),
-                        phone_str,
-                        email_str
+                        escape_html(phone_str),
+                        escape_html(email_str)
                     ));
                 }
                 text.push_str("───────────────────────────\n<i>Tip: Refine your search to open direct call/email action buttons.</i>");
@@ -2239,6 +2240,21 @@ pub async fn handle_callback_query(
     q: CallbackQuery,
     ctx: Arc<BotContext>,
 ) -> ResponseResult<()> {
+    // Commands are refused in groups (A-02); callbacks must be too, or a button
+    // press still mutates state and replies where commands are forbidden.
+    if let Some(msg) = &q.message {
+        let chat = msg.chat();
+        if chat.is_group() || chat.is_supergroup() {
+            bot.send_message(
+                chat.id,
+                "🔒 Academic Routine Assistant is designed for private direct chats to isolate your attendance, section, and reminders. Please message me directly!",
+            )
+            .await?;
+            bot.answer_callback_query(q.id).await?;
+            return Ok(());
+        }
+    }
+
     let data = match q.data.as_deref() {
         Some(d) => d,
         None => return Ok(()),
@@ -2318,18 +2334,84 @@ pub async fn handle_callback_query(
     Ok(())
 }
 
-/// Escapes HTML special characters for Telegram HTML mode.
-#[must_use]
-pub fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TimeSlot;
     use std::fs;
+    use std::str::FromStr;
+
+    /// One hostile object through every renderer: a raw sentinel in any card is a bug.
+    #[test]
+    fn test_rendered_cards_contain_no_raw_markup() {
+        const EVIL: &str = "<&>";
+        // The diff engine matches courses by their alphanumeric characters only, so a
+        // code of pure markup normalises to "" and is rejected — the diff would come
+        // back empty and prove nothing. Keep the sentinel inside a plausible code.
+        let evil_code = format!("CSE{EVIL}4101");
+        let teacher = TeacherContact::new(EVIL, Some(EVIL.into()), Some(EVIL.into()));
+        let mut entries = Vec::new();
+        for day in DayOfWeek::all() {
+            // A slot spanning the whole day keeps `render_next_card` on its
+            // "class in progress" branch at any wall-clock time; with only normal
+            // slots it returns "all classes concluded" after 13:00 and that
+            // renderer would go untested for most of the day.
+            for slot in ["00:00 - 23:59", "11:45 - 13:00"] {
+                entries.push(CourseEntry::new(
+                    evil_code.as_str(),
+                    EVIL,
+                    EVIL,
+                    *day,
+                    TimeSlot::from_str(slot).unwrap(),
+                    EVIL,
+                    teacher.clone(),
+                ));
+            }
+        }
+        let sched = Schedule::new(EVIL, None, entries);
+        let mut state = RoutineState::default();
+        state.set_user_section(1, EVIL);
+        state.set_attendance(1, &evil_code, 5, 2);
+        state.gist_id = Some(format!("{EVIL}0badc0de"));
+        let courses: Vec<&CourseEntry> = sched.entries.iter().collect();
+        let chat = teloxide::types::ChatId(1);
+
+        let check = |name: &str, out: String| {
+            assert!(!out.contains(EVIL), "unescaped field in {name}: {out}");
+            // "free" only prints times and gap lengths, so it has no escaped field to
+            // look for. Every other card carries an EVIL field; requiring the escape
+            // there stops the test from passing because a field was dropped instead
+            // of escaped.
+            if name != "free" {
+                assert!(
+                    out.contains("&lt;"),
+                    "field never rendered in {name}: {out}"
+                );
+            }
+        };
+        check("today", render_today_card(&sched, &state).0);
+        check("next", render_next_card(&sched, &state).0);
+        check("tomorrow", render_tomorrow_card(&sched).0);
+        check("overview", render_routine_overview(&sched).0);
+        check("day", render_routine_day(&sched, DayOfWeek::Mon).0);
+        check("directory", render_teachers_directory(&sched).0);
+        check(
+            "profile",
+            render_teacher_profile(EVIL, &teacher, &courses).0,
+        );
+        check("free", render_free_card(&sched, &state).0);
+        check("status", render_status_card(&sched, &state, chat).0);
+        check("section", render_section_card(1, &state).0);
+        check(
+            "attendance",
+            render_attendance_dashboard(1, &sched, &state).0,
+        );
+        check("calendar", render_calendar_subscription_card(Some(EVIL)).0);
+        check(
+            "diff",
+            crate::ScheduleDiff::between(&Schedule::default(), &sched).render_telegram_card(),
+        );
+    }
 
     #[test]
     fn failed_state_write_is_classified_as_failure() {
@@ -2343,17 +2425,6 @@ mod tests {
         assert!(STATE_SAVE_FAILED.contains("nothing was written"));
         assert!(!STATE_SAVE_FAILED.contains('✅'));
         assert!(!STATE_SAVE_FAILED.contains("Record:"));
-    }
-
-    #[test]
-    fn test_escape_html() {
-        assert_eq!(escape_html("Hello & World"), "Hello &amp; World");
-        assert_eq!(
-            escape_html("<script>alert(1)</script>"),
-            "&lt;script&gt;alert(1)&lt;/script&gt;"
-        );
-        assert_eq!(escape_html("Room 612 (Lab)"), "Room 612 (Lab)");
-        assert_eq!(escape_html("CSE-4101"), "CSE-4101");
     }
 
     #[test]

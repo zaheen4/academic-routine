@@ -1,5 +1,6 @@
 //! Routine diffing engine for detecting timetable modifications, time shifts, room changes, and new/dropped sessions.
 
+use crate::escape_html;
 use crate::model::course::CourseEntry;
 use crate::model::day::DayOfWeek;
 use crate::model::schedule::{is_all_section, normalize_section, Schedule};
@@ -353,12 +354,6 @@ impl ScheduleDiff {
 
         out
     }
-}
-
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
