@@ -1211,6 +1211,19 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 state.semester_end_date
             };
 
+            // `--sync-gist` is a request to publish, not a hint. Without a linked
+            // Gist the publish block below skips the sync and the command exits 0,
+            // leaving the caller convinced the feed was updated. Fail before the
+            // `.ics` is written so the command never half-succeeds.
+            if sync_gist && state.gist_id.is_none() {
+                return Err(CliError::new(format!(
+                    "{} --sync-gist requested but no Gist is linked. Run {} first, or export locally without {}.",
+                    "❌".red(),
+                    "academic-routine set-gist <ID>".cyan(),
+                    "--sync-gist".yellow()
+                )));
+            }
+
             let sched_to_export = if include_all {
                 &raw_schedule
             } else {
@@ -1233,24 +1246,20 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                     }
                     println!("   • Alarms included: 30-minute sound & notification popups");
 
-                    // Check if Gist sync requested or configured
-                    if sync_gist || state.gist_id.is_some() {
-                        if let Some(ref gid) = state.gist_id {
-                            println!("{} Syncing to GitHub Gist...", "🔄".cyan());
-                            match academic_routine::sync_gist_file(gid, &ics).await {
-                                Ok(url) => {
-                                    println!(
-                                        "{} Live subscription feed updated!",
-                                        "🚀".green().bold()
-                                    );
-                                    println!(
-                                        "   Subscribe in Google Calendar: {}",
-                                        url.yellow().bold()
-                                    );
-                                }
-                                Err(e) => {
-                                    return Err(CliError::new(format!("{} {e}", "❌".red())));
-                                }
+                    // A linked Gist is kept in sync on every export; `--sync-gist`
+                    // was validated above, so no target is a hard error now.
+                    if let Some(ref gid) = state.gist_id {
+                        println!("{} Syncing to GitHub Gist...", "🔄".cyan());
+                        match academic_routine::sync_gist_file(gid, &ics).await {
+                            Ok(url) => {
+                                println!("{} Live subscription feed updated!", "🚀".green().bold());
+                                println!(
+                                    "   Subscribe in Google Calendar: {}",
+                                    url.yellow().bold()
+                                );
+                            }
+                            Err(e) => {
+                                return Err(CliError::new(format!("{} {e}", "❌".red())));
                             }
                         }
                     }
