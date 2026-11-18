@@ -145,12 +145,10 @@ fn test_all_bot_commands_syntax_parsing() {
 
 #[test]
 fn test_free_breaks_calculation_logic() {
-    let scraper_path = Path::new("output/routine_data.json");
-    if !scraper_path.exists() {
-        return;
-    }
+    let routine_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/routine_sample.json");
 
-    let raw = load_routine_file(scraper_path).unwrap();
+    let raw = load_routine_file(&routine_path).unwrap();
     let sched = raw.filter_section("B2");
 
     // Check every day for breaks
@@ -179,12 +177,10 @@ fn test_free_breaks_calculation_logic() {
 
 #[test]
 fn test_next_class_countdown_simulation() {
-    let scraper_path = Path::new("output/routine_data.json");
-    if !scraper_path.exists() {
-        return;
-    }
+    let routine_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/routine_sample.json");
 
-    let sched = load_routine_file(scraper_path)
+    let sched = load_routine_file(&routine_path)
         .unwrap()
         .filter_section("B2");
     let sunday_classes = sched.for_day(DayOfWeek::Sun);
@@ -234,12 +230,10 @@ fn test_next_class_countdown_simulation() {
 
 #[test]
 fn test_teachers_directory_extraction() {
-    let scraper_path = Path::new("output/routine_data.json");
-    if !scraper_path.exists() {
-        return;
-    }
+    let routine_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/routine_sample.json");
 
-    let sched = load_routine_file(scraper_path)
+    let sched = load_routine_file(&routine_path)
         .unwrap()
         .filter_section("B2");
     let teachers = sched.teacher_directory();
@@ -259,16 +253,14 @@ fn test_teachers_directory_extraction() {
 
 #[test]
 fn test_bot_context_lifecycle_and_calendar_sync() {
-    let scraper_path = PathBuf::from("output/routine_data.json");
-    if !scraper_path.exists() {
-        return;
-    }
+    let routine_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/routine_sample.json");
 
     let temp_dir = tempfile::tempdir().unwrap();
     let state_path = temp_dir.path().join("routine_state.json");
 
     let ctx = BotContext::new(
-        scraper_path,
+        routine_path,
         state_path.clone(),
         Some("B2".to_string()),
         true,
@@ -311,16 +303,14 @@ fn test_bot_context_lifecycle_and_calendar_sync() {
 
 #[test]
 fn test_user_section_schedule_filtering() {
-    let scraper_path = PathBuf::from("output/routine_data.json");
-    if !scraper_path.exists() {
-        return;
-    }
+    let routine_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/routine_sample.json");
 
     let temp_dir = tempfile::tempdir().unwrap();
     let state_path = temp_dir.path().join("routine_state.json");
 
     let ctx = BotContext::new(
-        scraper_path,
+        routine_path,
         state_path.clone(),
         Some("B2".to_string()),
         true,

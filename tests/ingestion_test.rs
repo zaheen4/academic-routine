@@ -2,15 +2,11 @@ use academic_routine::{load_routine_file, DayOfWeek};
 use std::path::Path;
 
 #[test]
-fn test_real_ucam_file_ingestion_if_available() {
-    let real_path = Path::new("output/routine_data.json");
+fn test_sample_ucam_file_ingestion() {
+    let real_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/routine_sample.json");
 
-    if !real_path.exists() {
-        eprintln!("Skipping live file test; file not found on current host.");
-        return;
-    }
-
-    let schedule = load_routine_file(real_path).expect("Failed to ingest real UCAM routine file");
+    let schedule = load_routine_file(&real_path).expect("Failed to ingest real UCAM routine file");
 
     println!("Successfully loaded semester: {}", schedule.semester_name);
     println!("Total classes ingested: {}", schedule.entries.len());

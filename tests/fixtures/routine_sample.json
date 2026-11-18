@@ -1,0 +1,186 @@
+{
+  "generated_at": "2026-11-14T16:09:00.090541+00:00",
+  "semester": "2024-2025 Level 4 Term 1 January-July 2026",
+  "accounts_processed": [
+    "Account 1",
+    "Account 2"
+  ],
+  "entries": [
+    {
+      "CourseCode": "CSE-4101",
+      "CourseTitle": "Artificial Intelligence",
+      "Teacher": "UKD_Test Teacher One",
+      "TeacherPhone": "01700000001",
+      "TeacherEmail": "teacher.one@example.edu",
+      "Day": "Mon",
+      "Room": "120",
+      "TimeSlot": "9:15 AM - 10:30 AM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4101",
+      "CourseTitle": "Artificial Intelligence",
+      "Teacher": "UKD_Test Teacher One",
+      "TeacherPhone": "01700000001",
+      "TeacherEmail": "teacher.one@example.edu",
+      "Day": "Wed",
+      "Room": "120",
+      "TimeSlot": "8:0 AM - 9:15 AM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4102",
+      "CourseTitle": "Mathematical and Statistical Analysis for Engineers",
+      "Teacher": "SKB_Test Teacher Two",
+      "TeacherPhone": "01700000002",
+      "TeacherEmail": "teacher.two@example.edu",
+      "Day": "Sun",
+      "Room": "120",
+      "TimeSlot": "9:15 AM - 10:30 AM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4102",
+      "CourseTitle": "Mathematical and Statistical Analysis for Engineers",
+      "Teacher": "SKB_Test Teacher Two",
+      "TeacherPhone": "01700000002",
+      "TeacherEmail": "teacher.two@example.edu",
+      "Day": "Tue",
+      "Room": "120",
+      "TimeSlot": "10:30 AM - 11:45 AM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4111",
+      "CourseTitle": "Artificial Intelligence Lab",
+      "Teacher": "MAB_Test Teacher Three",
+      "TeacherPhone": "01700000003",
+      "TeacherEmail": "teacher.three@example.edu",
+      "Day": "Mon",
+      "Room": "AC-131",
+      "TimeSlot": "10:30 AM - 1:0 PM",
+      "Section": "B2"
+    },
+    {
+      "CourseCode": "CSE-4113",
+      "CourseTitle": "Internet Programming Lab",
+      "Teacher": "MAB_Test Teacher Three",
+      "TeacherPhone": "01700000003",
+      "TeacherEmail": "teacher.three@example.edu",
+      "Day": "Tue",
+      "Room": "AC-202",
+      "TimeSlot": "1:30 PM - 4:0 PM",
+      "Section": "B2"
+    },
+    {
+      "CourseCode": "CSE-4125",
+      "CourseTitle": "Introduction to Machine Learning",
+      "Teacher": "TA_Test Teacher Four",
+      "TeacherPhone": "01700000004",
+      "TeacherEmail": "teacher.four@example.edu",
+      "Day": "Mon",
+      "Room": "204",
+      "TimeSlot": "1:30 PM - 2:45 PM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4125",
+      "CourseTitle": "Introduction to Machine Learning",
+      "Teacher": "TA_Test Teacher Four",
+      "TeacherPhone": "01700000004",
+      "TeacherEmail": "teacher.four@example.edu",
+      "Day": "Wed",
+      "Room": "120",
+      "TimeSlot": "11:45 AM - 1:0 PM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4136",
+      "CourseTitle": "Computer Security",
+      "Teacher": "MAB_Test Teacher Three",
+      "TeacherPhone": "01700000003",
+      "TeacherEmail": "teacher.three@example.edu",
+      "Day": "Tue",
+      "Room": "120",
+      "TimeSlot": "8:0 AM - 9:15 AM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4136",
+      "CourseTitle": "Computer Security",
+      "Teacher": "MAB_Test Teacher Three",
+      "TeacherPhone": "01700000003",
+      "TeacherEmail": "teacher.three@example.edu",
+      "Day": "Wed",
+      "Room": "120",
+      "TimeSlot": "9:15 AM - 10:30 AM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4155",
+      "CourseTitle": "Introduction to Machine Learning Lab",
+      "Teacher": "MAB_Test Teacher Three",
+      "TeacherPhone": "01700000003",
+      "TeacherEmail": "teacher.three@example.edu",
+      "Day": "Sun",
+      "Room": "AC-202",
+      "TimeSlot": "10:30 AM - 1:0 PM",
+      "Section": "B2"
+    },
+    {
+      "CourseCode": "SS-4103",
+      "CourseTitle": "Entrepreneurship for IT Business",
+      "Teacher": "FKP_Test Teacher Five",
+      "TeacherPhone": "01700000005",
+      "TeacherEmail": "teacher.five@example.edu",
+      "Day": "Tue",
+      "Room": "120",
+      "TimeSlot": "11:45 AM - 1:0 PM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "SS-4103",
+      "CourseTitle": "Entrepreneurship for IT Business",
+      "Teacher": "FKP_Test Teacher Five",
+      "TeacherPhone": "01700000005",
+      "TeacherEmail": "teacher.five@example.edu",
+      "Day": "Wed",
+      "Room": "120",
+      "TimeSlot": "10:30 AM - 11:45 AM",
+      "Section": "B"
+    },
+    {
+      "CourseCode": "CSE-4111",
+      "CourseTitle": "Artificial Intelligence Lab",
+      "Teacher": "UKD_Test Teacher One",
+      "TeacherPhone": "01700000001",
+      "TeacherEmail": "teacher.one@example.edu",
+      "Day": "Mon",
+      "Room": "AC-217",
+      "TimeSlot": "10:30 AM - 1:0 PM",
+      "Section": "B1"
+    },
+    {
+      "CourseCode": "CSE-4113",
+      "CourseTitle": "Internet Programming Lab",
+      "Teacher": "SSH_Test Teacher Six",
+      "TeacherPhone": "01700000006",
+      "TeacherEmail": "teacher.six@example.edu",
+      "Day": "Sun",
+      "Room": "AC-131",
+      "TimeSlot": "10:30 AM - 1:0 PM",
+      "Section": "B1"
+    },
+    {
+      "CourseCode": "CSE-4155",
+      "CourseTitle": "Introduction to Machine Learning Lab",
+      "Teacher": "MdAM_Test Teacher Seven",
+      "TeacherPhone": "01700000007",
+      "TeacherEmail": "teacher.seven@example.edu",
+      "Day": "Tue",
+      "Room": "AC-217",
+      "TimeSlot": "1:30 PM - 4:0 PM",
+      "Section": "B1"
+    }
+  ]
+}

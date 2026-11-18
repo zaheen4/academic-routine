@@ -2233,10 +2233,8 @@ mod tests {
 
     #[test]
     fn test_bot_context_load_active_schedule() {
-        let routine_path = PathBuf::from("output/routine_data.json");
-        if !routine_path.exists() {
-            return;
-        }
+        let routine_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/routine_sample.json");
 
         let temp_dir = tempfile::tempdir().unwrap();
         let state_path = temp_dir.path().join("state.json");
