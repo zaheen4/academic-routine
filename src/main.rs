@@ -10,6 +10,15 @@ use colored::Colorize;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+/// A fatal CLI error. The message is already user-facing, emoji and colour included.
+struct CliError(String);
+
+impl CliError {
+    fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
+}
+
 fn state_path() -> PathBuf {
     let output_state = PathBuf::from("output/routine_state.json");
     if output_state.exists() {
@@ -39,16 +48,27 @@ fn resolve_ics_path() -> PathBuf {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> std::process::ExitCode {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
+    match run(cli).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(CliError(msg)) => {
+            eprintln!("{msg}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
 
+async fn run(cli: Cli) -> Result<(), CliError> {
     let state_file = state_path();
     let (store, recovery_note) = match StateStore::open(state_file.clone()) {
         Ok(res) => res,
         Err(e) => {
-            eprintln!("{} Failed to open state file: {e}", "❌".red());
-            std::process::exit(1);
+            return Err(CliError::new(format!(
+                "{} Failed to open state file: {e}",
+                "❌".red()
+            )));
         }
     };
     if let Some(note) = recovery_note {
@@ -72,49 +92,44 @@ async fn main() {
                     Ok(Some(p)) => p,
                     Ok(None) => PathBuf::from("output/routine_data.json"),
                     Err(e) => {
-                        eprintln!("{} {e}", "❌".red().bold());
-                        std::process::exit(1);
+                        return Err(CliError::new(format!("{} {e}", "❌".red().bold())));
                     }
                 },
             };
 
             if !prev_path.exists() {
-                eprintln!(
+                return Err(CliError::new(format!(
                     "{} Previous routine baseline not found at '{}'. Run a sync first to establish a baseline.",
                     "❌".red(),
                     prev_path.display()
-                );
-                return;
+                )));
             }
             if !curr_path.exists() {
-                eprintln!(
+                return Err(CliError::new(format!(
                     "{} Current routine file not found at '{}'.",
                     "❌".red(),
                     curr_path.display()
-                );
-                return;
+                )));
             }
 
             let old_sched = match load_routine_file(&prev_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!(
+                    return Err(CliError::new(format!(
                         "{} Failed to parse '{}': {e}",
                         "❌".red(),
                         prev_path.display()
-                    );
-                    return;
+                    )));
                 }
             };
             let new_sched = match load_routine_file(&curr_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!(
+                    return Err(CliError::new(format!(
                         "{} Failed to parse '{}': {e}",
                         "❌".red(),
                         curr_path.display()
-                    );
-                    return;
+                    )));
                 }
             };
 
@@ -124,7 +139,7 @@ async fn main() {
             }
 
             print!("{}", diff.render_terminal());
-            return;
+            return Ok(());
         }
         Some(Commands::Complete { code }) | Some(Commands::Drop { code }) => {
             if store.with_state(|s| s.is_dropped(code)) {
@@ -133,7 +148,7 @@ async fn main() {
                     "ℹ️".cyan(),
                     code.to_uppercase().bold()
                 );
-                return;
+                return Ok(());
             }
             match store.update(|s| (s.complete_course(code), s.dropped_courses.clone())) {
                 Ok((true, dropped)) => {
@@ -152,10 +167,13 @@ async fn main() {
                     );
                 }
                 Err(e) => {
-                    eprintln!("{} Failed to save state: {e}", "❌".red());
+                    return Err(CliError::new(format!(
+                        "{} Failed to save state: {e}",
+                        "❌".red()
+                    )));
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::Resume { code }) | Some(Commands::Restore { code }) => {
             if store.with_state(|s| !s.is_dropped(code)) {
@@ -164,7 +182,7 @@ async fn main() {
                     "ℹ️".yellow(),
                     code.to_uppercase().bold()
                 );
-                return;
+                return Ok(());
             }
             match store.update(|s| s.resume_course(code)) {
                 Ok(true) => {
@@ -182,10 +200,13 @@ async fn main() {
                     );
                 }
                 Err(e) => {
-                    eprintln!("{} Failed to save state: {e}", "❌".red());
+                    return Err(CliError::new(format!(
+                        "{} Failed to save state: {e}",
+                        "❌".red()
+                    )));
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::Completed) | Some(Commands::Dropped) => {
             let state = store.read();
@@ -199,8 +220,7 @@ async fn main() {
                     Ok(Some(p)) => load_routine_file(&p).ok(),
                     Ok(None) => None,
                     Err(e) => {
-                        eprintln!("{} {e}", "❌".red().bold());
-                        std::process::exit(1);
+                        return Err(CliError::new(format!("{} {e}", "❌".red().bold())));
                     }
                 };
                 println!("{} Currently completed courses:", "🎓".cyan().bold());
@@ -220,7 +240,7 @@ async fn main() {
                     }
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::Status) => {
             let state = store.read();
@@ -231,8 +251,7 @@ async fn main() {
             let routine_opt = match resolve_routine_path(cli.file.as_ref()) {
                 Ok(res) => res,
                 Err(e) => {
-                    eprintln!("{} {e}", "❌".red().bold());
-                    std::process::exit(1);
+                    return Err(CliError::new(format!("{} {e}", "❌".red().bold())));
                 }
             };
             match routine_opt {
@@ -362,7 +381,7 @@ async fn main() {
                 "ONLINE (Local daemon)".green().bold()
             );
             println!("└──────────────────────────────────────────────────────────────┘");
-            return;
+            return Ok(());
         }
         Some(Commands::Vacation { action, until }) => {
             let act = action.as_deref().unwrap_or("status").to_lowercase();
@@ -372,20 +391,20 @@ async fn main() {
                         match chrono::NaiveDate::parse_from_str(d_str, "%Y-%m-%d") {
                             Ok(d) => Some(d),
                             Err(e) => {
-                                eprintln!(
+                                return Err(CliError::new(format!(
                                     "{} Invalid date format (expected YYYY-MM-DD): {e}",
                                     "❌".red()
-                                );
-                                return;
+                                )));
                             }
                         }
                     } else {
                         None
                     };
-                    if let Err(e) = store.update(|s| s.set_vacation(true, end_date)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store
+                        .update(|s| s.set_vacation(true, end_date))
+                        .map_err(|e| {
+                            CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                        })?;
                     if let Some(d) = end_date {
                         println!("{} Vacation mode activated until {d}. Morning alerts and class reminders are paused.", "🏖️".yellow().bold());
                     } else {
@@ -393,10 +412,9 @@ async fn main() {
                     }
                 }
                 "off" | "disable" | "stop" | "resume" => {
-                    if let Err(e) = store.update(|s| s.set_vacation(false, None)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_vacation(false, None)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!(
                         "{} Vacation mode deactivated. Regular schedule notifications are active.",
                         "🎒".green().bold()
@@ -427,26 +445,24 @@ async fn main() {
                     );
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::Alerts { action }) => {
             let act = action.as_deref().unwrap_or("status").to_lowercase();
             match act.as_str() {
                 "off" | "disable" | "pause" | "stop" => {
-                    if let Err(e) = store.update(|s| s.set_morning_alerts(false)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_morning_alerts(false)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!(
                         "{} 06:00 AM proactive morning briefings PAUSED.",
                         "🔕".yellow().bold()
                     );
                 }
                 "on" | "enable" | "resume" | "start" => {
-                    if let Err(e) = store.update(|s| s.set_morning_alerts(true)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_morning_alerts(true)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!(
                         "{} 06:00 AM proactive morning briefings RESUMED.",
                         "🔔".green().bold()
@@ -473,99 +489,95 @@ async fn main() {
                     );
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::Pause { target }) => {
             let tgt = target.as_deref().unwrap_or("all").to_lowercase();
             match tgt.as_str() {
                 "alerts" => {
-                    if let Err(e) = store.update(|s| s.set_morning_alerts(false)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_morning_alerts(false)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!("{} Morning alerts paused.", "🔕".yellow().bold());
                 }
                 "gist" => {
-                    if let Err(e) = store.update(|s| s.set_sync_gist(false)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_sync_gist(false)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!(
                         "{} Automatic GitHub Gist sync paused.",
                         "⏸️".yellow().bold()
                     );
                 }
                 "gsheet" => {
-                    if let Err(e) = store.update(|s| s.set_sync_gsheet(false)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_sync_gsheet(false)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!(
                         "{} Automatic Google Sheets sync paused.",
                         "⏸️".yellow().bold()
                     );
                 }
                 _ => {
-                    if let Err(e) = store.update(|s| {
-                        s.set_morning_alerts(false);
-                        s.set_vacation(true, None);
-                    }) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store
+                        .update(|s| {
+                            s.set_morning_alerts(false);
+                            s.set_vacation(true, None);
+                        })
+                        .map_err(|e| {
+                            CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                        })?;
                     println!(
                         "{} All alerts and automated activities PAUSED (Vacation mode on).",
                         "⏸️".yellow().bold()
                     );
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::Unpause { target }) => {
             let tgt = target.as_deref().unwrap_or("all").to_lowercase();
             match tgt.as_str() {
                 "alerts" => {
-                    if let Err(e) = store.update(|s| s.set_morning_alerts(true)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_morning_alerts(true)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!("{} Morning alerts resumed.", "🔔".green().bold());
                 }
                 "gist" => {
-                    if let Err(e) = store.update(|s| s.set_sync_gist(true)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_sync_gist(true)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!(
                         "{} Automatic GitHub Gist sync resumed.",
                         "▶️".green().bold()
                     );
                 }
                 "gsheet" => {
-                    if let Err(e) = store.update(|s| s.set_sync_gsheet(true)) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store.update(|s| s.set_sync_gsheet(true)).map_err(|e| {
+                        CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                    })?;
                     println!(
                         "{} Automatic Google Sheets sync resumed.",
                         "▶️".green().bold()
                     );
                 }
                 _ => {
-                    if let Err(e) = store.update(|s| {
-                        s.set_morning_alerts(true);
-                        s.set_vacation(false, None);
-                    }) {
-                        eprintln!("{} Failed to save state: {e}", "❌".red());
-                        return;
-                    }
+                    store
+                        .update(|s| {
+                            s.set_morning_alerts(true);
+                            s.set_vacation(false, None);
+                        })
+                        .map_err(|e| {
+                            CliError::new(format!("{} Failed to save state: {e}", "❌".red()))
+                        })?;
                     println!(
                         "{} System RESUMED (Normal semester operations active).",
                         "▶️".green().bold()
                     );
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::Timer { action }) => {
             let act = action.as_deref().unwrap_or("status").to_lowercase();
@@ -626,7 +638,7 @@ async fn main() {
                     );
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::SetGist { id }) => {
             let clean_id = id.trim().to_string();
@@ -648,10 +660,13 @@ async fn main() {
                     );
                 }
                 Err(e) => {
-                    eprintln!("{} Failed to save state: {e}", "❌".red());
+                    return Err(CliError::new(format!(
+                        "{} Failed to save state: {e}",
+                        "❌".red()
+                    )));
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::SyncUcam {
             force,
@@ -676,131 +691,136 @@ async fn main() {
                     );
                     println!("   • Saved to: {}", path.display().to_string().cyan());
 
-                    if let Ok(raw_sched) = load_routine_file(&path) {
-                        println!("   • Total classes extracted: {}", raw_sched.entries.len());
-                        println!("   • Semester: {}", raw_sched.semester_name.yellow().bold());
+                    let raw_sched = load_routine_file(&path).map_err(|e| {
+                        CliError::new(format!(
+                            "{} Failed to parse routine from {}: {e}",
+                            "❌".red(),
+                            path.display()
+                        ))
+                    })?;
+                    println!("   • Total classes extracted: {}", raw_sched.entries.len());
+                    println!("   • Semester: {}", raw_sched.semester_name.yellow().bold());
 
-                        // Auto-import attendance records if attendance_data.json was extracted (M-08)
-                        let att_path = path
-                            .parent()
-                            .unwrap_or_else(|| std::path::Path::new(""))
-                            .join("attendance_data.json");
-                        if att_path.exists() {
-                            let admin_chat_id = resolve_admin_chat_id().unwrap_or(0);
-                            if admin_chat_id > 0 {
-                                match store.update(|s| {
-                                    s.import_ucam_attendance_file(admin_chat_id, &att_path)
-                                }) {
-                                    Ok(Ok(count)) => {
-                                        println!(
-                                            "   • {} Imported official attendance for {} courses into Chat ID {}!",
-                                            "📊".green().bold(),
-                                            count,
-                                            admin_chat_id
-                                        );
-                                    }
-                                    Ok(Err(e)) => {
-                                        eprintln!("   • ⚠️ Attendance import notice: {e}")
-                                    }
-                                    Err(e) => eprintln!("   • ⚠️ State save failed: {e}"),
+                    // Auto-import attendance records if attendance_data.json was extracted (M-08)
+                    let att_path = path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new(""))
+                        .join("attendance_data.json");
+                    if att_path.exists() {
+                        let admin_chat_id = resolve_admin_chat_id().unwrap_or(0);
+                        if admin_chat_id > 0 {
+                            match store
+                                .update(|s| s.import_ucam_attendance_file(admin_chat_id, &att_path))
+                            {
+                                Ok(Ok(count)) => {
+                                    println!(
+                                        "   • {} Imported official attendance for {} courses into Chat ID {}!",
+                                        "📊".green().bold(),
+                                        count,
+                                        admin_chat_id
+                                    );
                                 }
-                            } else {
-                                println!("   • ℹ️ Attendance data extracted, but no ADMIN_CHAT_ID or TELEGRAM_CHAT_ID configured to assign attendance to.");
+                                Ok(Err(e)) => {
+                                    eprintln!("   • ⚠️ Attendance import notice: {e}")
+                                }
+                                Err(e) => eprintln!("   • ⚠️ State save failed: {e}"),
+                            }
+                        } else {
+                            println!("   • ℹ️ Attendance data extracted, but no ADMIN_CHAT_ID or TELEGRAM_CHAT_ID configured to assign attendance to.");
+                        }
+                    }
+
+                    // Re-read fresh state after scrape & attendance import
+                    let state = store.read();
+                    let active_sched = raw_sched.filter_active(&state.dropped_courses);
+                    let ics_path = resolve_ics_path();
+                    export_ics_file(&active_sched, &ics_path, state.semester_end_date).map_err(
+                        |e| CliError::new(format!("{} Failed to write .ics file: {e}", "❌".red())),
+                    )?;
+                    println!(
+                        "   • Exported active calendar to: {}",
+                        ics_path.display().to_string().cyan()
+                    );
+
+                    if *local_only {
+                        println!("🔒 Local-only mode active: skipping cloud Gist and Google Sheets sync.");
+                        return Ok(());
+                    }
+
+                    // Gist sync
+                    if !*no_gist && state.auto_sync_gist {
+                        if let Some(ref gid) = state.gist_id {
+                            println!(
+                                "🔄 Syncing routine data, calendar, and metadata to GitHub Gist..."
+                            );
+                            match academic_routine::sync_gist_bundle(
+                                gid,
+                                &ics_path,
+                                &path,
+                                &state.public_meta(),
+                            )
+                            .await
+                            {
+                                Ok(url) => {
+                                    println!(
+                                        "🚀 Live subscription feed updated: {}",
+                                        url.yellow().bold()
+                                    );
+                                    println!("   • Synced routine.ics, routine_data.json, and routine_meta.json to Gist!");
+                                }
+                                Err(e) => eprintln!("⚠️ Gist sync notice: {e}"),
                             }
                         }
+                    } else if *no_gist {
+                        println!("ℹ️ Gist sync skipped (--no-gist).");
+                    }
 
-                        // Re-read fresh state after scrape & attendance import
-                        let state = store.read();
-                        let active_sched = raw_sched.filter_active(&state.dropped_courses);
-                        let ics_path = resolve_ics_path();
-                        let _ = export_ics_file(&active_sched, &ics_path, state.semester_end_date);
-                        println!(
-                            "   • Exported active calendar to: {}",
-                            ics_path.display().to_string().cyan()
-                        );
+                    // Google Sheets sync
+                    if !*no_gsheet && state.auto_sync_gsheet {
+                        let service_key_candidates =
+                            [PathBuf::from("google_cloud_keys/service_account_key.json")];
+                        let has_service_key = std::env::var("GOOGLE_SERVICE_ACCOUNT_KEY")
+                            .map(PathBuf::from)
+                            .map(|p| p.exists())
+                            .unwrap_or(false)
+                            || service_key_candidates.iter().any(|p| p.exists());
 
-                        if *local_only {
-                            println!("🔒 Local-only mode active: skipping cloud Gist and Google Sheets sync.");
-                            return;
-                        }
-
-                        // Gist sync
-                        if !*no_gist && state.auto_sync_gist {
-                            if let Some(ref gid) = state.gist_id {
-                                println!("🔄 Syncing routine data, calendar, and metadata to GitHub Gist...");
-                                match academic_routine::sync_gist_bundle(
-                                    gid,
-                                    &ics_path,
-                                    &path,
-                                    &state.public_meta(),
-                                )
-                                .await
-                                {
-                                    Ok(url) => {
-                                        println!(
-                                            "🚀 Live subscription feed updated: {}",
-                                            url.yellow().bold()
-                                        );
-                                        println!("   • Synced routine.ics, routine_data.json, and routine_meta.json to Gist!");
-                                    }
-                                    Err(e) => eprintln!("⚠️ Gist sync notice: {e}"),
+                        if has_service_key {
+                            let sheet_name = std::env::var("SPREADSHEET_NAME")
+                                .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
+                            println!("📊 Syncing routine to Google Spreadsheet ({sheet_name})...");
+                            match academic_routine::run_gsheet_sync(&path) {
+                                Ok(()) => {
+                                    println!(
+                                        "{} Synced to Google Spreadsheet (NewMain & backend tabs)!",
+                                        "✅".green().bold()
+                                    );
                                 }
+                                Err(e) => eprintln!("⚠️ Google Sheets sync note: {e}"),
                             }
-                        } else if *no_gist {
-                            println!("ℹ️ Gist sync skipped (--no-gist).");
                         }
-
-                        // Google Sheets sync
-                        if !*no_gsheet && state.auto_sync_gsheet {
-                            let service_key_candidates =
-                                [PathBuf::from("google_cloud_keys/service_account_key.json")];
-                            let has_service_key = std::env::var("GOOGLE_SERVICE_ACCOUNT_KEY")
-                                .map(PathBuf::from)
-                                .map(|p| p.exists())
-                                .unwrap_or(false)
-                                || service_key_candidates.iter().any(|p| p.exists());
-
-                            if has_service_key {
-                                let sheet_name = std::env::var("SPREADSHEET_NAME")
-                                    .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
-                                println!(
-                                    "📊 Syncing routine to Google Spreadsheet ({sheet_name})..."
-                                );
-                                match academic_routine::run_gsheet_sync(&path) {
-                                    Ok(()) => {
-                                        println!(
-                                            "{} Synced to Google Spreadsheet (NewMain & backend tabs)!",
-                                            "✅".green().bold()
-                                        );
-                                    }
-                                    Err(e) => eprintln!("⚠️ Google Sheets sync note: {e}"),
-                                }
-                            }
-                        } else if *no_gsheet {
-                            println!("ℹ️ Google Sheets sync skipped (--no-gsheet).");
-                        }
+                    } else if *no_gsheet {
+                        println!("ℹ️ Google Sheets sync skipped (--no-gsheet).");
                     }
                 }
                 Err(e) => {
-                    eprintln!(
+                    return Err(CliError::new(format!(
                         "{} Failed to extract routine from UCAM: {e}",
                         "❌".red().bold()
-                    );
-                    std::process::exit(1);
+                    )));
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::SyncGsheet { file }) => {
             let target_json = match file.clone() {
                 Some(f) => {
                     if !f.exists() {
-                        eprintln!(
+                        return Err(CliError::new(format!(
                             "{} Specified routine file does not exist: {}",
                             "❌".red().bold(),
                             f.display()
-                        );
-                        std::process::exit(1);
+                        )));
                     }
                     f
                 }
@@ -808,8 +828,7 @@ async fn main() {
                     Ok(Some(p)) => p,
                     Ok(None) => PathBuf::from("output/routine_data.json"),
                     Err(e) => {
-                        eprintln!("{} {e}", "❌".red().bold());
-                        std::process::exit(1);
+                        return Err(CliError::new(format!("{} {e}", "❌".red().bold())));
                     }
                 },
             };
@@ -829,22 +848,20 @@ async fn main() {
                     );
                 }
                 Err(e) => {
-                    eprintln!(
+                    return Err(CliError::new(format!(
                         "{} Failed to sync Google Spreadsheet: {e}",
                         "❌".red().bold()
-                    );
-                    std::process::exit(1);
+                    )));
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Commands::Bot { no_http }) => {
             let routine_path = match resolve_routine_path(cli.file.as_ref()) {
                 Ok(Some(p)) => p,
                 Ok(None) => PathBuf::from("output/routine_data.json"),
                 Err(e) => {
-                    eprintln!("{} {e}", "❌".red().bold());
-                    std::process::exit(1);
+                    return Err(CliError::new(format!("{} {e}", "❌".red().bold())));
                 }
             };
 
@@ -860,16 +877,17 @@ async fn main() {
             ) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("{} Failed to initialize bot state store: {e}", "❌".red());
-                    std::process::exit(1);
+                    return Err(CliError::new(format!(
+                        "{} Failed to initialize bot state store: {e}",
+                        "❌".red()
+                    )));
                 }
             };
 
-            if let Err(e) = academic_routine::run_bot_daemon(ctx).await {
-                eprintln!("{} {e}", "❌".red());
-                std::process::exit(1);
-            }
-            return;
+            academic_routine::run_bot_daemon(ctx)
+                .await
+                .map_err(|e| CliError::new(format!("{} {e}", "❌".red())))?;
+            return Ok(());
         }
         _ => {}
     }
@@ -878,17 +896,15 @@ async fn main() {
     let routine_path = match resolve_routine_path(cli.file.as_ref()) {
         Ok(Some(p)) => p,
         Ok(None) => {
-            eprintln!(
+            return Err(CliError::new(format!(
                 "{} No routine JSON file found. Specify one with {} or place it at {}",
                 "❌".red().bold(),
                 "--file <PATH>".cyan(),
                 "final_combined_routine.json".yellow()
-            );
-            std::process::exit(1);
+            )));
         }
         Err(e) => {
-            eprintln!("{} {e}", "❌".red().bold());
-            std::process::exit(1);
+            return Err(CliError::new(format!("{} {e}", "❌".red().bold())));
         }
     };
 
@@ -896,12 +912,11 @@ async fn main() {
     let raw_schedule = match load_routine_file(&routine_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
+            return Err(CliError::new(format!(
                 "{} Failed to parse routine from {}: {e}",
                 "❌".red(),
                 routine_path.display()
-            );
-            std::process::exit(1);
+            )));
         }
     };
 
@@ -920,7 +935,9 @@ async fn main() {
             if let Some(day_str) = day {
                 match DayOfWeek::from_str(&day_str) {
                     Ok(d) => print!("{}", render_day_table(&schedule, d)),
-                    Err(e) => eprintln!("{} {e}", "❌".red()),
+                    Err(e) => {
+                        return Err(CliError::new(format!("{} {e}", "❌".red())));
+                    }
                 }
             } else {
                 print!("{}", render_weekly_overview(&schedule));
@@ -995,7 +1012,7 @@ async fn main() {
                 for name in dir.keys() {
                     println!("   • {name}");
                 }
-                return;
+                return Ok(());
             }
 
             let matches = schedule.find_teachers(q);
@@ -1034,11 +1051,10 @@ async fn main() {
                 match chrono::NaiveDate::parse_from_str(d_str, "%Y-%m-%d") {
                     Ok(d) => Some(d),
                     Err(e) => {
-                        eprintln!(
+                        return Err(CliError::new(format!(
                             "{} Invalid --until date format (expected YYYY-MM-DD): {e}",
                             "❌".red()
-                        );
-                        std::process::exit(1);
+                        )));
                     }
                 }
             } else {
@@ -1082,14 +1098,18 @@ async fn main() {
                                         url.yellow().bold()
                                     );
                                 }
-                                Err(e) => eprintln!("{} {e}", "❌".red()),
+                                Err(e) => {
+                                    return Err(CliError::new(format!("{} {e}", "❌".red())));
+                                }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("{} Failed to write .ics file: {e}", "❌".red());
-                    std::process::exit(1);
+                    return Err(CliError::new(format!(
+                        "{} Failed to write .ics file: {e}",
+                        "❌".red()
+                    )));
                 }
             }
         }
@@ -1097,18 +1117,19 @@ async fn main() {
             let gid = match state.gist_id.as_deref() {
                 Some(id) => id,
                 None => {
-                    eprintln!(
+                    return Err(CliError::new(format!(
                         "{} No Gist linked. Run {} first.",
                         "❌".red(),
                         "academic-routine set-gist <ID>".cyan()
-                    );
-                    std::process::exit(1);
+                    )));
                 }
             };
 
             let ics_path = resolve_ics_path();
             if !ics_path.exists() {
-                let _ = export_ics_file(&schedule, &ics_path, state.semester_end_date);
+                export_ics_file(&schedule, &ics_path, state.semester_end_date).map_err(|e| {
+                    CliError::new(format!("{} Failed to write .ics file: {e}", "❌".red()))
+                })?;
             }
 
             println!(
@@ -1119,8 +1140,7 @@ async fn main() {
                 Ok(Some(p)) => p,
                 Ok(None) => PathBuf::from("output/routine_data.json"),
                 Err(e) => {
-                    eprintln!("{} {e}", "❌".red().bold());
-                    std::process::exit(1);
+                    return Err(CliError::new(format!("{} {e}", "❌".red().bold())));
                 }
             };
             let result = if json_path.exists() {
@@ -1135,7 +1155,9 @@ async fn main() {
                     println!("{} Live subscription feed updated!", "🚀".green().bold());
                     println!("   Google Calendar Feed: {}", url.yellow().bold());
                 }
-                Err(e) => eprintln!("{} {e}", "❌".red()),
+                Err(e) => {
+                    return Err(CliError::new(format!("{} {e}", "❌".red())));
+                }
             }
         }
         None => {
@@ -1144,4 +1166,6 @@ async fn main() {
         }
         _ => {}
     }
+
+    Ok(())
 }
