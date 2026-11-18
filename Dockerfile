@@ -15,8 +15,10 @@ COPY tests ./tests
 # Build optimized production binary
 RUN cargo build --release
 
-# Production runtime image with headless browser & virtual display capabilities
-FROM debian:bookworm-slim
+# Production runtime image with headless browser & virtual display capabilities.
+# Trixie, not Bookworm: the Python floor is 3.12 (see pyproject.toml), and
+# Bookworm's `python3` is 3.11.2, which `uv sync` would reject.
+FROM debian:trixie-slim
 
 ENV TZ=Asia/Dhaka
 ENV ROUTINE_TIMEZONE_OFFSET=6

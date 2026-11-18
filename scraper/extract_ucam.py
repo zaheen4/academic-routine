@@ -22,7 +22,7 @@ import os
 import re
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from bs4 import BeautifulSoup
@@ -1214,7 +1214,7 @@ def run_parser_from_html(
     logger.info("Parsed %d entries from '%s'.", len(entries), html_path)
 
     payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "semester": "Offline HTML fixture",
         "accounts_processed": ["html-file"],
         "entries": entries,
@@ -1297,7 +1297,7 @@ async def run_multi_account_extraction(
             unique_entries.append(e)
 
     payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "semester": latest_semester,
         "accounts_processed": processed_accounts,
         "entries": unique_entries,
@@ -1335,7 +1335,7 @@ async def run_multi_account_extraction(
                 unique_att[code] = a
         att_path = output_path.parent / "attendance_data.json"
         att_payload = {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
             "primary_account": accounts[0].get("username", "Unknown"),
             "records": list(unique_att.values()),
         }

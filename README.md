@@ -236,7 +236,7 @@ academic-routine bot
 
 ### Prerequisites
 - [Rust](https://www.rust-lang.org/tools/install) 1.89+ (2021 edition, declared as `rust-version` in `Cargo.toml`)
-- [Python 3.10+](https://www.python.org/) with `uv` (`uv sync`)
+- [Python 3.12+](https://www.python.org/) with `uv` (`uv sync`)
 - System Chromium or Google Chrome with `xvfb-run` (for offscreen headless scraping on Linux)
 
 ### Environment Configuration

@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -328,7 +328,7 @@ def sync_newmain_worksheet(ws, entries: list[dict], dry_run: bool = False) -> di
         ws.batch_clear(clear_ranges)
 
     # Write footer stamp
-    now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(UTC)
     ws.update(values=[[format_stamp(now_dt)]], range_name=f"{stamp_col}{stamp_row}")
     ws.update(values=[[SIGNATURE]], range_name=f"{stamp_col}{stamp_row + 1}")
     ws.format(f"{stamp_col}{stamp_row}", {"horizontalAlignment": "LEFT"})
