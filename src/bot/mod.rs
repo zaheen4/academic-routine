@@ -8,10 +8,19 @@ pub use handlers::{handle_callback_query, handle_command, BotContext, Command};
 pub use scheduler::{start_class_reminder_daemon, start_morning_scheduler};
 
 use std::sync::Arc;
+use std::time::Duration;
 use teloxide::dispatching::UpdateFilterExt;
+use teloxide::error_handlers::LoggingErrorHandler;
 use teloxide::prelude::*;
 use teloxide::types::Update;
+use teloxide::update_listeners::polling_default;
 use teloxide::utils::command::BotCommands;
+
+/// Startup attempts made while Telegram is unreachable, before giving up.
+const MAX_STARTUP_ATTEMPTS: u32 = 10;
+
+/// Upper bound for the exponential backoff between startup attempts.
+const MAX_STARTUP_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// Launches the interactive Telegram bot daemon and 6:00 AM morning scheduler.
 ///
@@ -143,9 +152,6 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
         });
     }
 
-    println!("🤖 Academic Routine Telegram Bot is online and listening for messages!");
-    println!("   Commands supported: /today, /next, /tomorrow, /free, /teacher, /teachers, /routine, /calendar, /sync");
-
     let handler = dptree::entry()
         .branch(
             Update::filter_message()
@@ -184,12 +190,40 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
             },
         ));
 
+    // Wait for the Telegram API before announcing readiness. A session can start
+    // before DNS is usable, and the dispatcher aborts the process when its own
+    // pre-flight fails, so retry here with backoff instead of racing the network.
+    let mut delay = Duration::from_secs(1);
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        match bot.get_me().send().await {
+            Ok(_) => break,
+            Err(e) if attempt < MAX_STARTUP_ATTEMPTS => {
+                eprintln!(
+                    "⏳ Telegram API not reachable yet ({e}); retrying in {delay:?} (attempt {attempt}/{MAX_STARTUP_ATTEMPTS})"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(MAX_STARTUP_RETRY_DELAY);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    println!("🤖 Academic Routine Telegram Bot is online and listening for messages!");
+    println!("   Commands supported: /today, /next, /tomorrow, /free, /teacher, /teachers, /routine, /calendar, /sync");
+
+    // `dispatch` panics when the initial `get_me` fails; the fallible variant
+    // lets a network error surface as an `Err` for systemd to restart on.
+    let listener = polling_default(bot.clone()).await;
+    let error_handler = LoggingErrorHandler::with_custom_text("An error from the update listener");
+
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![Arc::clone(&shared_ctx)])
         .enable_ctrlc_handler()
         .build()
-        .dispatch()
-        .await;
+        .try_dispatch_with_listener(listener, error_handler)
+        .await?;
 
     Ok(())
 }
