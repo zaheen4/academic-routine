@@ -47,6 +47,75 @@ fn resolve_ics_path() -> PathBuf {
     output_ics
 }
 
+/// What a health probe can actually prove about a daemon we cannot see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonProbe {
+    /// The daemon's own `/health` endpoint answered with a success status.
+    Healthy,
+    /// The port refused a connection, or something other than our endpoint answered.
+    NoHealth,
+    /// The probe could not reach a conclusion (timeout, resolver or client failure).
+    Unknown,
+}
+
+/// Probes the daemon's health endpoint on loopback.
+///
+/// This is the only check that proves something is serving. A systemd unit can
+/// read `active` while the process is in a restart loop, and the daemon can run
+/// outside systemd entirely. A daemon started with `--no-http` is alive and
+/// invisible here, which is why "no answer" is reported as `NoHealth` and not
+/// as "offline" — the status line must not invent a verdict it cannot support.
+async fn probe_daemon_health(port: &str) -> DaemonProbe {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(700))
+        .connect_timeout(std::time::Duration::from_millis(300))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return DaemonProbe::Unknown,
+    };
+
+    match client
+        .get(format!("http://127.0.0.1:{port}/health"))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => DaemonProbe::Healthy,
+        Ok(_) => DaemonProbe::NoHealth,
+        Err(error) if error.is_connect() => DaemonProbe::NoHealth,
+        Err(_) => DaemonProbe::Unknown,
+    }
+}
+
+/// The one line `status` may print about the bot daemon.
+fn describe_daemon(probe: DaemonProbe, port: &str) -> String {
+    match probe {
+        DaemonProbe::Healthy => format!("ONLINE (health check on :{port} answered)"),
+        DaemonProbe::NoHealth => format!("NOT DETECTED (no health endpoint on :{port})"),
+        DaemonProbe::Unknown => format!("UNKNOWN (health check on :{port} did not answer)"),
+    }
+}
+
+/// State of a user systemd unit, or `None` when systemd cannot be consulted.
+///
+/// `is-active` exits non-zero for a unit that is merely inactive, so the exit
+/// status carries no information; the printed state does. Empty stdout means the
+/// command itself failed — no user manager, systemctl not installed, a container
+/// without systemd — and that is *unknown*, not "inactive". The old code mapped
+/// both to INACTIVE.
+fn systemd_unit_state(unit: &str) -> Option<String> {
+    let output = std::process::Command::new("systemctl")
+        .args(["--user", "is-active", unit])
+        .output()
+        .ok()?;
+    let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if state.is_empty() {
+        None
+    } else {
+        Some(state)
+    }
+}
+
 /// Regenerates the local `.ics` from the routine plus the current completion list.
 ///
 /// The bot rewrites the calendar on every state change; the CLI did not, so
@@ -418,27 +487,29 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             };
             println!("│ 📊 Google Sheets Sync : {} ({sheet_name})", status_sheet);
 
-            let timer_active = std::process::Command::new("systemctl")
-                .args(["--user", "is-active", "academic-routine-sync.timer"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
-                .unwrap_or(false);
-            if timer_active {
-                println!(
+            match systemd_unit_state("academic-routine-sync.timer").as_deref() {
+                Some("active") => println!(
                     "│ ⏱️ Weekly Auto-Timer : {} (Saturday 20:00:00)",
                     "ACTIVE".green().bold()
-                );
-            } else {
-                println!(
-                    "│ ⏱️ Weekly Auto-Timer : {}",
+                ),
+                Some(other) => println!(
+                    "│ ⏱️ Weekly Auto-Timer : {} (systemd: {other})",
                     "INACTIVE / PAUSED".yellow().bold()
-                );
+                ),
+                None => println!(
+                    "│ ⏱️ Weekly Auto-Timer : {}",
+                    "UNKNOWN (systemctl unavailable)".yellow().bold()
+                ),
             }
 
-            println!(
-                "│ 🤖 Telegram Bot       : {}",
-                "ONLINE (Local daemon)".green().bold()
-            );
+            let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
+            let probe = probe_daemon_health(&port).await;
+            let daemon = describe_daemon(probe, &port);
+            if probe == DaemonProbe::Healthy {
+                println!("│ 🤖 Telegram Bot       : {}", daemon.green().bold());
+            } else {
+                println!("│ 🤖 Telegram Bot       : {}", daemon.yellow().bold());
+            }
             println!("└──────────────────────────────────────────────────────────────┘");
             return Ok(());
         }
@@ -647,7 +718,14 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                         .status();
                     match res {
                         Ok(s) if s.success() => println!("{} Weekly auto-sync timer PAUSED.", "⏸️".yellow().bold()),
-                        _ => eprintln!("{} Could not pause systemd timer (systemctl --user unavailable or failed).", "⚠️".yellow()),
+                        Ok(s) => return Err(CliError::new(format!(
+                            "{} Failed to pause the weekly sync timer: systemctl exited with {s}",
+                            "❌".red().bold()
+                        ))),
+                        Err(e) => return Err(CliError::new(format!(
+                            "{} Failed to pause the weekly sync timer: could not run systemctl --user: {e}",
+                            "❌".red().bold()
+                        ))),
                     }
                 }
                 "resume" | "start" | "enable" => {
@@ -656,7 +734,14 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                         .status();
                     match res {
                         Ok(s) if s.success() => println!("{} Weekly auto-sync timer RESUMED (runs Saturdays at 20:00).", "▶️".green().bold()),
-                        _ => eprintln!("{} Could not resume systemd timer (systemctl --user unavailable or failed).", "⚠️".yellow()),
+                        Ok(s) => return Err(CliError::new(format!(
+                            "{} Failed to resume the weekly sync timer: systemctl exited with {s}",
+                            "❌".red().bold()
+                        ))),
+                        Err(e) => return Err(CliError::new(format!(
+                            "{} Failed to resume the weekly sync timer: could not run systemctl --user: {e}",
+                            "❌".red().bold()
+                        ))),
                     }
                 }
                 "run" | "trigger" => {
@@ -669,25 +754,30 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                             "{} Sync service launched in background.",
                             "✅".green().bold()
                         ),
-                        _ => eprintln!("{} Could not trigger service.", "❌".red()),
+                        Ok(s) => return Err(CliError::new(format!(
+                            "{} Failed to run the sync service: systemctl exited with {s}. Check journalctl --user -u academic-routine-sync.service",
+                            "❌".red().bold()
+                        ))),
+                        Err(e) => return Err(CliError::new(format!(
+                            "{} Failed to run the sync service: could not run systemctl --user: {e}. Check journalctl --user -u academic-routine-sync.service",
+                            "❌".red().bold()
+                        ))),
                     }
                 }
                 _ => {
-                    let is_active = std::process::Command::new("systemctl")
-                        .args(["--user", "is-active", "academic-routine-sync.timer"])
-                        .output()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
-                        .unwrap_or(false);
-                    if is_active {
-                        println!(
+                    match systemd_unit_state("academic-routine-sync.timer").as_deref() {
+                        Some("active") => println!(
                             "⏱️ Weekly sync timer: {} (Runs Saturday 20:00:00)",
                             "ACTIVE".green().bold()
-                        );
-                    } else {
-                        println!(
-                            "⏱️ Weekly sync timer: {}",
+                        ),
+                        Some(other) => println!(
+                            "⏱️ Weekly sync timer: {} (systemd: {other})",
                             "INACTIVE / PAUSED".yellow().bold()
-                        );
+                        ),
+                        None => println!(
+                            "⏱️ Weekly sync timer: {}",
+                            "UNKNOWN (systemctl unavailable)".yellow().bold()
+                        ),
                     }
                     println!(
                         "   Commands: '{}', '{}', '{}'",
@@ -1228,4 +1318,29 @@ async fn run(cli: Cli) -> Result<(), CliError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_wording_never_claims_more_than_the_probe_proved() {
+        assert!(describe_daemon(DaemonProbe::Healthy, "8000").starts_with("ONLINE"));
+        assert!(!describe_daemon(DaemonProbe::NoHealth, "8000").contains("ONLINE"));
+        assert!(!describe_daemon(DaemonProbe::Unknown, "8000").contains("ONLINE"));
+        assert!(describe_daemon(DaemonProbe::NoHealth, "8000").contains("NOT DETECTED"));
+        assert!(describe_daemon(DaemonProbe::Unknown, "8000").contains("UNKNOWN"));
+    }
+
+    #[test]
+    fn a_missing_unit_is_never_reported_active() {
+        // The result depends on whether this machine runs a user systemd manager,
+        // so assert only the invariant that matters: a unit that does not exist is
+        // never described as active.
+        assert_ne!(
+            systemd_unit_state("academic-routine-does-not-exist.timer").as_deref(),
+            Some("active")
+        );
+    }
 }

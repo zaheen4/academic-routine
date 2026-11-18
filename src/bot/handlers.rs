@@ -803,6 +803,10 @@ pub fn render_status_card(
     let sheet_name =
         std::env::var("SPREADSHEET_NAME").unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
 
+    // Answering this command is exactly what the card can prove about the daemon:
+    // it is up and processing messages. That says nothing about the embedded HTTP
+    // listener (disabled by `bot --no-http`) or the scheduler task (which can die
+    // on its own), so the old "Listening" wording was a lie.
     let text = format!(
         "🎓 <b>Academic Routine Assistant Status</b>\n───────────────────────────\n\
          📁 <b>Semester:</b> <code>{}</code>\n\
@@ -811,7 +815,7 @@ pub fn render_status_card(
          🔔 <b>Morning Alerts:</b> {}\n───────────────────────────\n\
          🔗 <b>Gist Feed:</b> {}\n\
          📊 <b>Google Sheets:</b> <code>{}</code>\n\
-         🤖 <b>Bot Daemon:</b> Online &amp; Listening\n───────────────────────────\n\
+         🤖 <b>Bot Daemon:</b> Online (answering this message)\n───────────────────────────\n\
          <i>💡 Tap a button below or send /alerts, /vacation to adjust.</i>",
         escape_html(&sched.semester_name),
         sched.entries.len(),

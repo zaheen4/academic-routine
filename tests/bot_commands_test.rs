@@ -467,6 +467,11 @@ fn test_status_card_and_hybrid_vacation() {
     let (status_text, _) = render_status_card(&sched, &state, user_chat);
     assert!(status_text.contains("<b>INACTIVE</b> (Normal Semester)"));
     assert!(status_text.contains("Morning Alerts:</b> 🔔 <b>ACTIVE</b>"));
+    // The card is produced by the daemon, so answering proves it is up. It proves
+    // nothing about the HTTP listener or the scheduler task, and the old wording
+    // claimed both.
+    assert!(status_text.contains("Online (answering this message)"));
+    assert!(!status_text.contains("Listening"));
 
     // User personal vacation active
     state.set_user_vacation(
