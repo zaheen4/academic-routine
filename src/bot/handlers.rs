@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::{CallbackQuery, InlineKeyboardMarkup, ParseMode};
-use teloxide::utils::command::BotCommands;
+use teloxide::utils::command::{BotCommands, ParseError};
 
 /// User-facing text for a state write that failed. Nothing was persisted, so claiming
 /// success here would be a lie the user only discovers later.
@@ -39,9 +39,23 @@ fn classify_save<T, E: std::fmt::Display>(result: Result<T, E>) -> Saved<T> {
     }
 }
 
+/// Parses a command argument that is taken verbatim.
+///
+/// The macro's default parser wraps an infallible `FromStr` in a closure whose
+/// error branch can never run. Rust 1.100 made `Infallible` an alias for `!`, so
+/// that dead branch is now a call from unreachable code and `-D warnings` rejects
+/// the whole derive expansion (teloxide#1485; fixed upstream by #1486, which no
+/// released `teloxide-macros` carries yet). Every argument this bot accepts is
+/// free text, so one explicit parser removes the dead branch instead of silencing
+/// the lint for the whole crate. A variant that ever needs a typed argument must
+/// carry its own `parse_with`.
+fn parse_free_text(args: String) -> Result<(String,), ParseError> {
+    Ok((args,))
+}
+
 /// 🎓 University Routine Assistant Commands:
 #[derive(BotCommands, Clone, Debug, PartialEq, Eq)]
-#[command(rename_rule = "lowercase")]
+#[command(rename_rule = "lowercase", parse_with = parse_free_text)]
 pub enum Command {
     /// Show help and command instructions
     Help,
