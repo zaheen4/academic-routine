@@ -143,10 +143,7 @@ pub async fn run_bot_daemon(ctx: BotContext) -> Result<(), Box<dyn std::error::E
                 Err(e) => {
                     eprintln!("⚠️ Gist initial sync note: {e}. Falling back to portal scrape...");
                     let target = startup_ctx.routine_path.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        crate::engine::scraper::run_ucam_scraper(&target)
-                    })
-                    .await;
+                    let _ = crate::engine::scraper::run_ucam_scraper(&target).await;
                 }
             }
         });

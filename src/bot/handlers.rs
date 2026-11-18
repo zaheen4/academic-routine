@@ -1978,13 +1978,8 @@ pub async fn handle_command(
             .await?;
 
             let routine_target = ctx.routine_path.clone();
-            let scrape_res = tokio::task::spawn_blocking(move || {
-                crate::engine::scraper::run_ucam_scraper(&routine_target)
-            })
-            .await;
-
-            match scrape_res {
-                Ok(Ok(path)) => {
+            match crate::engine::scraper::run_ucam_scraper(&routine_target).await {
+                Ok(path) => {
                     let att_path = path
                         .parent()
                         .unwrap_or_else(|| std::path::Path::new(""))
@@ -2039,7 +2034,7 @@ pub async fn handle_command(
                         }
                     }
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     bot.send_message(
                         chat_id,
                         format!(
@@ -2051,10 +2046,6 @@ pub async fn handle_command(
                     )
                     .parse_mode(ParseMode::Html)
                     .await?;
-                }
-                Err(e) => {
-                    bot.send_message(chat_id, format!("❌ <b>Internal task error:</b>\n{e}"))
-                        .await?;
                 }
             }
         }

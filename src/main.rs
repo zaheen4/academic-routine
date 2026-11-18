@@ -683,7 +683,8 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             );
             let target_json = resolve_write_target(cli.file.as_ref());
 
-            match academic_routine::run_ucam_scraper_opts_force(&target_json, *headed, *force) {
+            match academic_routine::run_ucam_scraper_opts_force(&target_json, *headed, *force).await
+            {
                 Ok(path) => {
                     println!(
                         "{} Successfully extracted routine from UCAM!",
@@ -789,7 +790,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                             let sheet_name = std::env::var("SPREADSHEET_NAME")
                                 .unwrap_or_else(|_| "CSE-03_B_ClassRoutine".to_string());
                             println!("📊 Syncing routine to Google Spreadsheet ({sheet_name})...");
-                            match academic_routine::run_gsheet_sync(&path) {
+                            match academic_routine::run_gsheet_sync(&path).await {
                                 Ok(()) => {
                                     println!(
                                         "{} Synced to Google Spreadsheet (NewMain & backend tabs)!",
@@ -840,7 +841,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 target_json.display().to_string().cyan()
             );
 
-            match academic_routine::run_gsheet_sync(&target_json) {
+            match academic_routine::run_gsheet_sync(&target_json).await {
                 Ok(()) => {
                     println!(
                         "{} Successfully updated Google Spreadsheet (NewMain & backend)! 🎉",
